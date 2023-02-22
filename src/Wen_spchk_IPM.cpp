@@ -434,8 +434,6 @@ Type objective_function<Type>::operator() ()
   jnll += allterms_nll(b_psi, theta_psi2, psi_terms, false,rate);//);//psi
 
   
-  //  Prior on hyper-means of log productivity (alpha) in juvenle production function; ~normal(4,3)
-  // jnll-=dnorm(beta_alpha,Type((4)),Type(3),true).sum();
   
   //---------------------------------------------------------------------------------------------------  
 
@@ -456,7 +454,6 @@ Type objective_function<Type>::operator() ()
       else{
         if(p>=fac){
           Loadings_pf(p,fac) = Loadings_vec(Count);//
-          // if(p==fac){Loadings_pf(p,fac) = exp(Loadings_pf(p,fac));}
           Count++;
         }else{
           Loadings_pf(p,fac) = 0.0;
@@ -546,10 +543,6 @@ Type objective_function<Type>::operator() ()
   vector<Type> eta_long(n_slt+n_slt_proj);
   ////retrospective
   eta_long.head(n_slt)=eta;
-  ////prospective
-  // SIMULATE {
-  //   for(int i=n_slt; i<(n_slt_proj+n_slt); i++) {eta_long(i)=rnorm(0.0,1.0);}
-  // }
   //~~~~~~~~~~~~~~~~~~~
   ////MSCJS model
   //~~~~~~~~~~~~~~~~~~~
@@ -1078,8 +1071,6 @@ Type objective_function<Type>::operator() ()
   //~~~~~~~~~~~~~~~~~~~
   ////Juvenile emigrant abundance
   //~~~~~~~~~~~~~~~~~~~
-  // vector<Type> log_J_pred=log(J_pred.head(n_slt));
-  // REPORT(log_J_pred);
   jnll -= dnorm(J_obs , eta  ,J_obs_sd , true ).sum();
   
   //~~~~~~~~~~~~~~~~~~~
@@ -1097,10 +1088,7 @@ Type objective_function<Type>::operator() ()
   Type NLL_it=0;      // holds the NLL for each CH
   Type tmp = 0;       // holds the prob of a given state during observation process in upstream migration
   
-  // SIMULATE{
-  // vector<Type> NLL_it_vec(n_unique_CH); // holds likelihood of each unique CH
-  // }
-  
+
   for(int n=0; n<n_unique_CH; n++){ // loop over individual unique capture histories
     pS.setZero(); //initialize at 0,1,0,0 (conditioning at capture)
     pS(1)=Type(1);
