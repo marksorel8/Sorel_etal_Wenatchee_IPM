@@ -1,0 +1,836 @@
+---
+title: "PVA results"
+author: "Mark Sorel"
+date: ""
+output: word_document
+---
+
+
+```{r include-FALSE, message=FALSE, warning=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r load_packages, message=FALSE, warning=FALSE}
+library(here)
+library(TMB)
+library(TMBhelper)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(forcats)
+library(viridisLite)
+library(readxl)
+
+```
+
+
+```{r fit_model, message=FALSE, warning=FALSE}
+
+##source functions
+ here::i_am("src/Wen_spchk_IPM.cpp")
+setwd(here())
+sapply(list.files(here("src","functions")),
+       FUN=function(x){source(paste0("src/functions/",x))})
+##load and process data
+input<-make_data()
+dat_IPM<-input$dat_IPM
+##initialize TMB model and find maximum likelihood estimate of parameters (takes ~10 minutes)
+obj<-initialize_model()
+## conduct population projection simulations (can take ~30 minutes)
+sim_list<-pop_projection()
+```
+
+```{r load_sim,cache=TRUE, cache.extra = file.mtime(here("results","sim_list.Rdata"))}
+#unpack the needed simulation items from the list that they are saved in
+sim_pars_array<-sim_list$sim_pars_array  #derived paramaters from posterior samples
+sim_out<-sim_list$sim_out                 # spawners        
+A_tum<-sim_list$A_tum                     # adults at Tumwater
+sim_p_female<-sim_list$sim_p_female       # proportion female
+sim_pHOS<-sim_list$sim_pHOS               # proportion hatchery origiin spawners
+sim_S_wild<-sim_out*(1-sim_pHOS)          # wild spawners
+sim_NOB<-sim_list$sim_NOB                 # natural origin broodstock
+dat_IPM$proj_years<-50                    # number of projections years
+BS_Max<-dat_IPM$BS_Max                 # broodstock sizes
+rm(sim_list)
+gc()
+```
+
+
+```{r LH_abund_plot,fig.height=9,cache=TRUE, cache.extra = file.mtime(here("results","sim_list_2_19.Rdata"))}
+
+
+#adults returning to tumwater by brood year
+Tum_ad_med<-apply(A_tum,1:4,median)
+ar_med_long<-tibble(Emigrants=c(Tum_ad_med),
+                        year=rep(seq(from=1996,length.out=dim(Tum_ad_med)[1]),times=prod(dim(Tum_ad_med)[2:4])),
+                        stream=rep(rep(c("Chiwawa","Nason","White"),each=dim(Tum_ad_med)[1]),times=prod(dat_IPM$n_l,dat_IPM$n_ages)),
+                        LH=rep(rep(c("Spr.0","Sum.0","Fal.0","Spr.1"),each=prod(dim(Tum_ad_med)[1:2])),times=dat_IPM$n_ages),
+                        age=rep(3:5,each=prod(dim(Tum_ad_med)[1:3]))
+)%>%
+  mutate(LH=fct_relevel(LH,c("Spr.0","Sum.0","Fal.0","Spr.1"))) %>%
+  filter(age!=3) %>%
+  group_by(year,stream,LH) %>% summarise(A_tum_4_5=sum(Emigrants),.groups = "keep") %>% ungroup() %>% 
+  filter(year<max(year))
+
+rm(Tum_ad_med)
+
+Tum_adult_broodYear_plot<-ggplot(data=ar_med_long,
+       aes(fill=LH, x=year, y=A_tum_4_5))+ geom_bar(stat="identity", width=.8)+facet_wrap(~stream,scales="free_y",ncol=1)+xlab("Juvenile brood_year")
+
+
+rm(ar_med_long)
+
+
+
+#adults returning to tumwater by *return* year
+
+## multiply returning adults by proportion of females 
+A_tum_f<-array(NA,dim=dim(A_tum))
+for ( i in 1:dim(A_tum)[5]){      # simulations
+  for ( a in 1:3){                # ages      
+    for ( l in 1:dim(A_tum)[3]){  # LHPs
+    A_tum_f[a:((dim(A_tum)[1])),,l,a,i]<-
+      A_tum[1:((dim(A_tum)[1])-(a-1)),,l,a,i]*
+      sim_p_female[(3+a):(dim(sim_p_female)[1]),,i] # proportion female
+
+    
+    }
+  }
+}
+
+
+
+# sum across adult return ages
+Tum_ad<-apply(A_tum_f,c(1:3,5),sum)
+#take median across simulations
+Tum_ad_med<-apply(Tum_ad,1:3,median)
+
+
+#dataframe of posterior median adult returns by life history and natal stream
+ar_med_long<-data.frame(adults=c(Tum_ad_med),year=seq(from=1996+3,length.out=dim(A_tum_f)[1]),
+                        stream=rep(c("Chiwawa","Nason","White"),each=dim(Tum_ad_med)[1]),
+                        LH=rep(c("Spring age 0","Summer age 0","Fall age 0","Spring age 1"),each=prod(dim(Tum_ad_med)[1:2]))) %>%
+  as_tibble()%>% 
+  mutate(LH=fct_relevel(LH,c("Spring age 0","Summer age 0","Fall age 0","Spring age 1"))) %>% pivot_wider(names_from=stream,values_from = adults) %>% mutate(Total=Chiwawa+Nason+White) %>% pivot_longer(cols=(Chiwawa:Total),names_to = "stream",values_to = "adults") %>% 
+  mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")))
+
+#plot
+Tum_adult_returnYear<-ggplot(data=ar_med_long,
+aes(fill=LH, x=year, y=adults))+ geom_bar(stat="identity", width=.8)+scale_fill_manual(values=rev(RColorBrewer::brewer.pal(n = 4, name = "Dark2")))+facet_wrap(~stream,scales="free_y",ncol=1)+xlab("Spawn year")+ylab("Natural-origin return")+geom_vline(xintercept=2019.45,lty=2)+theme(legend.title=element_blank())
+
+rm(ar_med_long)
+gc()
+```
+
+
+```{r synchrony,cache=TRUE, cache.extra = file.mtime(here("results","sim_list.Rdata"))}
+#years of future simulations (excluding retrospective)
+sim_sum_yrs<-(dat_IPM$last_t+1-3):(dat_IPM$last_t+dat_IPM$proj_years-3)
+sim_sum_yrs_actual<-(sim_sum_yrs+1995+3) %>% range %>% paste(collapse=" -- ")
+
+#mean abundance
+total_tum_ad<-apply(Tum_ad,c(1,3:4),sum,simplify = TRUE) #total acorss streams
+
+Tum_ad_w_tots<-abind::abind(Tum_ad,total_tum_ad,along=2 ) #individual streams with totals
+
+
+mean_abund<-apply(Tum_ad_w_tots[sim_sum_yrs,,,],2:4,function(x){
+  mean(x)
+})
+
+#SD abundance
+sd_abund<-apply(Tum_ad_w_tots[sim_sum_yrs,,,],2:4,function(x){
+  sd(x)
+})
+
+
+#CV by stream and LHP
+CV_SL<-sd_abund/mean_abund
+
+#weighted average (by mean) of CV across LHPs within streams
+CV_Weighted_S<-array(NA,dim=c(5,dim(Tum_ad_w_tots)[4]))
+prop_abund<-numeric(4)
+for(i in 1:(dim(Tum_ad_w_tots)[4])){
+  for(j in 1:4){
+  prop_abund<-mean_abund[j,,i]/sum(mean_abund[j,,i])
+    
+ CV_Weighted_S[j,i]<-sum(CV_SL[j,,i]*prop_abund)
+  }
+ CV_Weighted_S[5,i]<- sum(CV_SL[1:3,,i]*(mean_abund[1:3,,i]/sum(mean_abund[1:3,,i])))
+}
+
+
+
+#CV of sum of all LHPs within streams
+#adult female returns by stream and LHP
+Tum_ad_S<-apply(Tum_ad_w_tots,c(1:2,4),sum)
+
+#mean abundance across years 20-50 of projection
+mean_abund_S<-apply(Tum_ad_S[sim_sum_yrs,,],2:3,function(x){
+  mean(x)
+})
+
+#SD abundance across years 20-50
+sd_abund_S<-apply(Tum_ad_S[sim_sum_yrs,,],2:3,function(x){
+  sd(x)
+})
+
+CV_S<-sd_abund_S/mean_abund_S
+
+#quantiles of CVs by life history and stream
+sum_CV_LS<-matrix(
+apply(CV_SL,1:2,quantile,probs=c(.05,.25,.5,.75,.95)),nrow=5) %>% `colnames<-`(paste(rep(c("Chiwawa","Nason","White","Total"),times=4),rep(c("spr.0","sum.0","fal.0","spr.1"),each=4)))
+
+#quantiles of weighted CV by stream
+sum_CV_S_weighted<-apply(CV_Weighted_S,1,quantile,probs=c(.05,.25,.5,.75,.95)) %>% `colnames<-`(paste(rep(c("Chiwawa","Nason","White","Total LHP","LHP * stream"),times=1),rep(c("mean"),times=5)))
+
+#quantiles of CV by stream
+sum_CV_S<-apply(CV_S,1,quantile,probs=c(.05,.25,.5,.75,.95)) %>% `colnames<-`(paste(c("Chiwawa","Nason","White","Total"),rep("sum",4)))
+
+#combined weighted CV and CV by stream
+Sum_CV_streams_all<-cbind(sum_CV_S_weighted,sum_CV_S) 
+
+
+#weighted average (by mean) of CV across streams 
+CV_Weighted_Wenatchee<-numeric(dim(Tum_ad)[4])
+prop_abund<-numeric(3)
+for(i in 1:dim(Tum_ad)[4]){
+  prop_abund<-mean_abund_S[,i]/sum(mean_abund_S[,i])
+    
+ CV_Weighted_Wenatchee[i]<-sum(CV_S[,i]*prop_abund)
+  }
+
+
+#CV for all Wenatchee
+Tum_ad_Wenatchee<-apply(Tum_ad_S,c(1,3),sum)
+
+CV_Wenatchee<- apply(Tum_ad_Wenatchee[sim_sum_yrs,],2,function(x){
+  sd(x)/mean(x)
+})
+
+
+sum_CV_Wenatchee<-cbind(
+  quantile(CV_Weighted_Wenatchee,probs=c(.05,.25,.5,.75,.95)),
+quantile(CV_Wenatchee,probs=c(.05,.25,.5,.75,.95))
+) %>% 
+  `colnames<-`(c("Stream mean","Total across streams"))
+
+
+Sum_CV_streams_all_LHPs<-cbind(sum_CV_LS,sum_CV_S_weighted,sum_CV_S) 
+
+sum_CV_Wenatchee_all<-cbind(Sum_CV_streams_all,sum_CV_Wenatchee) %>% as_tibble() %>% select(1,6,2,7,3,8,5,4,10,9) %>% mutate(quant=1:5,.before=everything()) %>% pivot_longer(2:last_col(),names_to = "level") %>% pivot_wider(values_from = value,names_from = quant) %>% mutate(level=as_factor(level)) %>%
+  mutate(stream=factor(c(rep(c("Chiwawa","Nason","White"),each=2),rep("Total",4))),
+         stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")),
+         cat=c(rep(c("Mean","Sum"),times=3),"LHP * stream mean", "LHP mean", "Stream mean", "Sum"))
+
+
+# plot
+CV_streams_plot<-
+  ggplot(sum_CV_Wenatchee_all, aes(cat,fill=stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity")+ylab("Coefficient of variation")+xlab("")+theme(axis.text.x = element_text(angle=90,hjust = 1,vjust=0.5)) +facet_grid(~stream,  scales = "free_x", space = "free_x") +
+    theme(panel.spacing = unit(.2, "lines"),legend.position="none")
+    # xlab("Category")
+
+
+# calculate portfolio effects
+percent_reduction_CV<- (1- rbind(CV_S,CV_Wenatchee,CV_Wenatchee)/rbind(CV_Weighted_S,CV_Weighted_Wenatchee)) %>% 
+apply(1,quantile,probs=c(.05,.25,.5,.75,.95)) %>% 
+  `*` (100)
+
+# big dataframe
+everything_CVs_long<-Sum_CV_streams_all_LHPs[,-21] %>% as_tibble()  %>% mutate(quant=1:5,.before=everything()) %>% 
+  pivot_longer(2:last_col(),names_to = "level") %>% pivot_wider(values_from = value,names_from = quant) %>% mutate(level=as_factor(level),
+                                                                                                                   Stream=c(rep(c("Chiwawa","Nason","White","Total"),6)),
+                                                                                                                   group=c(rep(c("Spr.0","Sum.0","Fal.0","Spr.1"),each=4),
+   rep(c("Mean","Total"),each=4)))  %>% 
+  mutate(group=fct_relevel(group,c("Spr.0","Sum.0","Fal.0","Spr.1","Mean","Total")),
+         Stream=fct_relevel(Stream,c("Chiwawa","Nason","White","Total")))
+
+
+#plot of CVs for individual LHPs for supplement
+individual_LHPs_CV<-everything_CVs_long %>% ggplot( aes(group)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+facet_wrap(~Stream,ncol=1)+theme(axis.text.x = element_text(angle=90,hjust = 1,vjust=0.5))+ylab("Coefficient of variation")+xlab("")
+
+gc()
+```
+
+
+```{r proportions}
+
+#proportions of adults returns by life history pathways
+prop_func<-function(x,combine_DSR=FALSE){
+
+props_LH<-apply(x[sim_sum_yrs,,,],c(1,2,4),
+                       function(x)x/sum(x))
+
+ave_props_LH<-props_LH %>% apply(c(1,3,4),mean)
+
+ave_props_LH %>% apply(1:2,quantile,probs=c(.05,.25,.5,.75,.95))
+
+
+}
+
+wild_female_spawner_props<-prop_func(Tum_ad_w_tots,FALSE)
+
+
+
+
+```
+
+
+
+
+```{r plot_trajectories,fig.height=9,fig.width=8}
+# function to plot simulated future populatin trajectories
+plot_troj<-function(dat,include_points=TRUE,ylab="Female spawners (Hatchery+Natural)",add_total=TRUE,ylim_max=NA){
+if(add_total){
+  dat_new<-dat %>%abind::abind(apply(dat,c(1,3),sum),along=2) #add the toal across streams
+}else{
+  dat_new<-dat
+}
+  #quantile by year
+sim_out_sum<-apply(dat_new,# add sum across streams
+                  1:2,quantile,probs=c(.05,.25,.5,.75,.95),na.rm=T)
+
+
+sim_traj<-matrix(sim_out_sum,nrow=5) %>% t() %>% `colnames<-`(1:5) %>% as_tibble() %>%  mutate(stream=as.factor(rep(c("Chiwawa","Nason","White","Total")[1:(dim(dat)[2]+add_total)],each=dim(sim_out_sum)[2])),
+    stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")),                                                                                       t=rep((1:dim(sim_out_sum)[2]),times=(dim(dat)[2]+add_total))+1995) %>% filter(!((stream=="Nason"&t<=(dat_IPM$first_t[2]+1995))|(stream%in%c("White","Total")&t<=(dat_IPM$first_t[3]+1995))))
+
+if(include_points){
+ggplot(data=sim_traj)+
+  geom_ribbon(aes(ymin=`1`,ymax=`5`,x=t),fill=rgb(.5,.5,.5,.5))+
+  geom_ribbon(aes(ymin=`2`,ymax=`4`,x=t),fill=rgb(.5,.5,.5,.5))+
+  geom_line(aes(y=`3`,x=t))+
+geom_point(data=dat_IPM$log_S_obs %>% exp %>% as_tibble %>% mutate(Total=Chiwawa+Nason+White) %>% mutate() %>% pivot_longer(everything()) %>% mutate(t=rep(1:dat_IPM$last_t,each=(dim(dat)[2]+add_total))+1995) %>% rename(stream=name) %>% mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total"))),aes(x=t,y=value),size=1)+ 
+    scale_y_continuous(expand = c(0, 0), limits = c(0, ylim_max)) +
+  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")
+}else{
+  ggplot(data=sim_traj)+
+  geom_ribbon(aes(ymin=`1`,ymax=`5`,x=t),fill=rgb(.5,.5,.5,.5))+
+  geom_ribbon(aes(ymin=`2`,ymax=`4`,x=t),fill=rgb(.5,.5,.5,.5))+
+  geom_line(aes(y=`3`,x=t))+
+        scale_y_continuous(expand = c(0, 0), limits = c(0, ylim_max)) +
+  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")+geom_vline(xintercept=2019.5,lty=2)
+}
+}
+
+
+#plot of trajectory for all female spawners
+traj_plot_female_all_spawners<-plot_troj(sim_out,TRUE)
+
+# function to plot boxplots of geometric means of population abundance in projections
+geo_mean_func<-function(dat,lab){
+  
+  dat_w_tots<-dat %>%abind::abind(apply(dat,c(1,3),sum),along=2)
+# geometric mean wild female spawners in year 20-50 of projection
+geo_mean<-apply(dat_w_tots[sim_sum_yrs+3,,],2:3,function(x){
+  exp(sum(log(x)/length(x))) 
+})
+
+#summarized geomeans by stream
+geo_mean_sum<-apply(geo_mean,1,quantile,probs=c(.05,.25,.5,.75,.95),na.rm=T)
+
+
+geo_mean_out<-geo_mean_sum %>% `colnames<-` (c("Chiwawa","Nason","White","Total")) %>% as_tibble() %>% mutate(quants=1:5) %>%  pivot_longer(1:4, names_to="stream") %>% pivot_wider(names_from =  quants) %>% mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")))
+
+boxplot<-ggplot(geo_mean_out, aes(stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+ylab(lab )+xlab("")+theme(axis.text.x=element_text(angle = 90,vjust=.2))
+  
+return(list(geo_mean_all=geo_mean,
+            geo_mean_sum=geo_mean_sum,
+            boxplot=boxplot))
+}
+
+# boxplots all female spawners
+geoMean_all_females_boxplot<-geo_mean_func(sim_out,"Geometric mean 2020-2069")
+
+
+
+```
+
+```{r geo_mean_wild_female_abund}
+
+# trajectory plot wild only
+traj_plot_female_wild<-plot_troj(sim_S_wild,FALSE,"Natural-origin female spawners")
+
+
+
+# geometric mean wild female spawners 
+geoMean_wild_females_boxplot<-geo_mean_func(sim_S_wild,"Geometric mean 2020-2069")
+
+
+```
+
+
+
+```{r pQET}
+
+sim_S_wild_tot<- apply(sim_S_wild,c(1,3),sum)#total spawners across streams
+sim_S_wild_w_tot<-sim_S_wild %>% abind::abind(sim_S_wild_tot,along=2)#add sum across streams to individual streams
+
+# function to calculate 4-year running mean
+running_mean<-apply(sim_S_wild_w_tot[sim_sum_yrs+3,,],2:3,function(x){
+  out<-numeric(length(x)-3)
+  for ( i in 1:(length(x)-3)) out[i]<-mean(x[i:(i+3)])
+  return(out)
+})
+
+# quasi extinction event years
+QET_year<-apply(running_mean,2:3,function(x){
+  out<-numeric(length(x))
+  for ( i in 1:length(out)) out[i]<-(min(x[1:i],na.rm=T)<=15)
+  
+  out
+})
+
+# quasi-extinction during any year of a simulation
+QET_classification<-apply(running_mean,2:3,function(x){min(x,na.rm=T)<15})
+
+
+pQET_boot<-matrix(NA,dim(sim_out)[3]/100,4) ## matrix to hold proportion of 100 trajectories made with each posterior sample where quasi-extinction occured
+QET_year_boot<- array(NA,dim=c(dim(QET_year)[1:2],dim(sim_out)[3]/100)) ## probability of quasi extinction by year
+
+ind<-1:100
+for (i in 1:(dim(sim_out)[3]/100)){
+  samp_i<-QET_classification[,ind]
+  pQET_i<-apply(samp_i,1,sum)/100
+  pQET_boot[i,]<-pQET_i
+  
+  QET_year_boot[,,i]<-apply(QET_year[,,ind],1:2,function(x){
+  sum(x)/length(x)
+})
+ ind<-ind+100 
+}
+
+# calculate quanitles
+pQET_boot_quant<-apply(pQET_boot,2,quantile,probs=c(.05,.25,.5,.75,.95)) %>% t() %>% as_tibble()  %>% `colnames<-` (1:5)%>% mutate(stream=c("Chiwawa","Nason","White","Total"),                                                                                  stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")))
+
+#boxplot
+pQET_boxplot<-ggplot(pQET_boot_quant, aes(stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+ylim(0,1)+ylab(bquote(paste(italic(p)^'QET', " 2030-2069")))+theme(axis.text.x=element_text(angle = 90,vjust=.2))+xlab("")
+
+
+#plot probabilities by year
+QET_year_boot_quant<-apply(QET_year_boot,1:2,quantile,probs=c(.05,.25,.5,.75,.95)) %>% matrix(nrow=5) %>% t() %>% `colnames<-` (c(.05,.25,.5,.75,.95)) %>% as_tibble() %>% mutate(year=rep(4:dat_IPM$proj_years,4),stream=rep(c("Chiwawa","Nason","White","Total"),each=(dat_IPM$proj_years-3))) %>% mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total"))) %>% ggplot() +geom_ribbon(aes(ymin=`0.05`,ymax=`0.95`,x=year),fill=rgb(.5,.5,.5,.5))+
+  geom_ribbon(aes(ymin=`0.25`,ymax=`0.75`,x=year),fill=rgb(.5,.5,.5,.5))+
+  geom_line(aes(y=`0.5`,x=year))+facet_wrap(~stream,ncol=1)+ylab(bquote(paste(italic(p)^'QET')))+xlab("Years")
+                                                                                                                                         
+
+
+```
+
+
+```{r mean_pHOS}
+# proportion of hatchery origin spawners 
+mean_pHOS<-apply(sim_pHOS[sim_sum_yrs+3,,],2:3,function(x){
+  mean(x)
+})
+
+#summarized means by stream
+mean_pHOS_sum<-apply(mean_pHOS,1,quantile,probs=c(.05,.25,.5,.75,.95))
+
+
+mean_pHOS_out<-mean_pHOS_sum %>% `colnames<-` (c("Chiwawa","Nason","White")) %>% as_tibble() %>% mutate(quants=1:5) %>%  pivot_longer(1:3, names_to="stream") %>% pivot_wider(names_from =  quants)
+
+#boxplots
+mean_pHOS_boxplot<-ggplot(mean_pHOS_out, aes(stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+ylab("Mean 2030-2069")+xlab("")+ylim(0,1)+theme(axis.text.x=element_text(angle = 90,vjust=.2))+ylim(0,1)
+#trajectory plot
+traj_pHOS<-plot_troj(sim_pHOS,FALSE,bquote(paste(italic(p)^'HOS')),add_total=FALSE,ylim_max=1)
+
+```
+
+
+
+```{r mean_pNOB}
+#calculate pNOB in projection years
+sim_pNOB<-sim_NOB
+sim_pNOB[,1,]<-sim_pNOB[,1,]/BS_Max[1] # Chiwawa
+sim_pNOB[,2,]<-sim_pNOB[,2,]/BS_Max[2] #Nason
+
+
+#read data on historical pNOB
+broodstock_dat<-read_excel(here("data","broodstock_remova.xlsx"),sheet=2)
+
+#create an array to fill with historical and projected pNOB
+pNOB_with_obs<-array(NA,dim=c(dim(sim_out)[1],dim(sim_pNOB)[2:3]))
+#fill with projection
+pNOB_with_obs[seq(25,length= dat_IPM$proj_years):(25+ dat_IPM$proj_years-1),,]<-sim_pNOB
+
+#fill with historical
+##CHiwawa
+pNOB_with_obs[1:24,1,]<-broodstock_dat %>% filter(Year<=2019 & Year >=(2019-23) & Program=="Chiwawa") %>% pull(pNOB) %>% as.numeric()
+##Nason
+pNOB_with_obs[1:24,2,]<-broodstock_dat %>% filter(Year<=2019 & Year >=(2019-23) & Program=="Nason") %>% pull(pNOB) %>% as.numeric()
+
+traj_pNOB<-plot_troj(pNOB_with_obs,FALSE,bquote(paste(italic(p)^'NOB')),add_total=FALSE,ylim_max=1)
+
+
+# mean PNOB
+mean_pNOB<-apply(pNOB_with_obs[sim_sum_yrs+3,,],2:3,function(x){
+  mean(x)
+})
+
+#summarized mean by stream
+mean_pNOB_sum<-apply(mean_pNOB,1,quantile,probs=c(.05,.25,.5,.75,.95))
+
+
+mean_pNOB_out<-mean_pNOB_sum %>% `colnames<-` (c("Chiwawa","Nason")) %>% as_tibble() %>% mutate(quants=1:5) %>%  pivot_longer(1:2, names_to="stream") %>% pivot_wider(names_from =  quants)
+
+mean_pNOB_boxplot<-ggplot(mean_pNOB_out, aes(stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+ylab("Mean 2030-2069")+xlab("")+ylim(0,1)+theme(axis.text.x=element_text(angle = 90,vjust=.2))
+
+
+
+```
+
+
+```{r mean_pNI}
+#calculate pNI in projection years
+sim_pNI<-pNOB_with_obs/(pNOB_with_obs+sim_pHOS[,1:2,])
+
+
+# mean PNI
+mean_pNI<-apply(sim_pNI[sim_sum_yrs+3,,],2:3,function(x){
+  mean(x)
+})
+
+#summarized geomeans by stream
+mean_pNI_sum<-apply(mean_pNI,1,quantile,probs=c(.05,.25,.5,.75,.95))
+
+
+mean_pNI_out<-mean_pNI_sum %>% `colnames<-` (c("Chiwawa","Nason")) %>% as_tibble() %>% mutate(quants=1:5) %>%  pivot_longer(1:2, names_to="stream") %>% pivot_wider(names_from =  quants)
+
+mean_pNI_boxplot<-ggplot(mean_pNI_out, aes(stream)) +
+  geom_boxplot(
+   aes(ymin = `1`, lower = `2`, middle = `3`, upper = `4`, ymax = `5`),
+   stat = "identity"
+ )+ylab("Mean 2030-2069")+xlab("")+ylim(0,1)+theme(axis.text.x=element_text(angle = 90,vjust=.2))
+
+
+
+
+traj_pNI<-plot_troj(sim_pNI,FALSE,"PNI",add_total=FALSE,ylim_max=1)
+```
+
+
+```{r sensitivity_anlysis}
+#sensitivity analysis
+##parameter names for plotting (wierd ones are codes for creek letters)
+par_names<-c(
+
+paste(rep(c("\u03b1","\u03b3","Jmax"),each=4),rep(c("Spr.0","Sum.0","Fal.0","Spr.1"),times=3),sep=" "),
+
+paste("time 1 \u3D5",c("Spr.0","Sum.0","Fal.0","Spr.1"),sep=" "),
+
+paste("\u3D5 DS",c("DSR","Spr.1"),sep=" "),
+
+paste("SAR",c("DSR","Spr.1"),sep=" "),
+
+paste("\u3D5 US age",c("3","4","5"),sep=" "),
+
+paste(c("% age 3"," % age 5"),rep(c("DSR","Spr.1"),each=2),sep=" "),
+"\u3D5 PS",
+"p female",
+"RRS")
+
+# arrays to hold outputs
+sens_results_geom_mean<-array(NA,dim=c(30,3,2),dimnames = list(par_names,
+                                                               dimnames(sim_pars_array)[[2]],
+                                                               c("Corr","p_value")))
+
+sim_pars_array_trans<-sim_pars_array
+sim_pars_array_trans[1:12,,]<-log(sim_pars_array[1:12,,]) #log transform some parameters
+sim_pars_array_trans[13:30,,]<-qlogis(sim_pars_array[13:30,,]) #logit transform some parameters
+
+## correlations between geometric mean natural origin female spawners and parameter values across simulations (by stream)
+for(stream in 1:3){ # loop over streams
+for (i in 1:30){    # loop over parameter values
+  ct<-cor.test(log(geoMean_wild_females_boxplot$geo_mean_all[stream,]),(sim_pars_array_trans[i,stream,]))
+  sens_results_geom_mean[i,stream,1]<-ct$estimate
+  sens_results_geom_mean[i,stream,2]<-ct$p.value
+}
+}
+
+## table of sensitivity results
+cor_dat<-sens_results_geom_mean[,,1] %>% as_tibble() %>% mutate(Parameter=as.factor(rownames(sens_results_geom_mean[,,1])),
+                                                                Parameter=fct_relevel(Parameter,rownames(sens_results_geom_mean[,,1]))) %>%
+  pivot_longer(Chiwawa:White,names_to="stream",values_to="cors")
+
+sensitivity_table_2<-ggplot(cor_dat ,aes(x=stream,y=Parameter,fill=cors))+geom_raster()+ 
+  scale_fill_gradient2(low="blue",high="red",guide="none")+geom_text(aes(label=sprintf("%0.2f", round(cors, digits = 2))))+
+  theme(panel.background = element_blank())+scale_x_discrete(position="top")+ scale_y_discrete(limits = rev(par_names))+theme( axis.ticks = element_blank(),axis.text.y = element_text(margin=margin(0,-10,0,0)))+ylab("")+xlab("")
+
+
+# correlations among parameters across posterior samples
+cor_chiw<- sim_pars_array_trans[,1,] %>%  t() %>% cor() %>% `rownames<-`(par_names) %>% `colnames<-`(par_names)
+
+
+cor_nason<- sim_pars_array_trans[,2,] %>%  t() %>% cor()%>% `rownames<-`(par_names) %>% `colnames<-`(par_names)
+
+cor_white<- sim_pars_array_trans[,3,] %>%  t() %>% cor()%>% `rownames<-`(par_names) %>% `colnames<-`(par_names)
+
+
+```
+
+
+```{r , echo=FALSE}
+## table captions
+
+library(captioner)
+tab_nums <- captioner("Table S.",auto_space=FALSE)
+tab_nums("sensitivity_tab", "Correlation between the simulated log geometric mean abundance of natural-origin female spawners in in 2020-2069 and parameters or derived quantities for each natal stream (Columns). *\u03b1*, *\u03b3*, and *Jmax* are parameters in models of the production of juveniles emigrating as subyearlings in spring (*Spr.0*), summer (*Sum.0*), and (*fall.0*), and yearlings in spring (*Spr.0*). These parameters were all log transformed before correlations were assessed. *Time 1 \u3D5* represents survival between emigrating from the natal stream and entering the mainstem Columbia River migration corridor, which includes the overwinter period for fish that emigrated from their natal stream as subyearlings (downstream-rearing juvenile life histories). *DSR* represents all downstream-rearing life history pathways. *\u3D5 DS* represents downstream survival between entering the main stem of the Columbia River and passing Bonneville Dam as juveniles. *SAR* are smolt-to-adult return rates from and to Bonneville Dam. *\u3D5 US* is upstream survival from Bonneville Dam to Tumwater Dam. *% age* is the percent of fish returning at a given age. *\u3D5 PS* is survival rate between passing Tumwater Dam as an adult and spawning. *RRS* is the reproductive success of hatchery-origin spawners relative to natural-origin spawners. All rates were logit transformed prior to calculating correlations.",display=FALSE)
+
+```
+
+```{r , echo=FALSE}
+## fighure captions
+fig_nums <- captioner()
+
+fig_nums("map", "Maps of the Wenatchee River Basin (a) and the Columbia River migration corridor (b). The numbers on dams and traps represent the capture occasions corresponding with fish passing each location.",display=FALSE)
+
+fig_nums("IPM_diagram", "Conceptual diagram of population model. Square boxes represent population states (i.e. life stage abundances), and arrows connecting boxes represent demographic rates (i.e., juvenile production, survival, and maturation). Green boxes are directly informed by abundance data, whereas white boxes are not. Orange arrows are directly informed by mark-recapture data whereas black lines are not. Red ovals represent auxiliary data that inform population states and demographic rates.",display=FALSE)
+
+
+fig_nums("CV", "Boxplots of the coefficients of variation (CV) of simulated abundance of natural-origin adults returning to Tumwater Dam in 2020-2069. *Weighted means* for Chiwawa, Nason, White, and total represent average CVs across LHPs within each stream or for total abundance across streams. *Sums* represent the CV of the sum of returns across LHPs.  The *LPH x stream weighted mean* is the average across LHPs and natal streams, and the *Stream weighted mean* is the average of the CVs of the total returns (across LHPs) to each stream. *Total sum* is the CV of the aggregate return across streams and LHPs. For each box, the thick line represents the median CV across 50,000 projections, the boxes span the interquartile range, and the whiskers span the 90% quantile range. ",display=FALSE)
+
+```
+
+
+```{r , echo=FALSE}
+fig_nums("Tum_adult_returnYear", "Median abundance of natural-origin adults returning to Tumwater Dam by year and juvenile life history pathway for three natal streams and the total across streams. Vertical dashed lines delineate years fit to data from projections.",display=FALSE)
+
+```
+
+
+```{r , echo=FALSE}
+fig_nums("traj_wild", "Natural-origin female spawner abundance in three natal streams and the total across streams. Years to the left of the dotted line were fit to data and years to the right of the dotted line were projected. Lines represents medians across simulations, dark shaded envelopes represent interquartile ranges and light shaded envelopes represents 90% quantile ranges. Boxplots are of the geometric mean abundance in years 2020-2069 across projections. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges." ,display=FALSE)
+
+fig_nums("pQET_troj", "Proportion of projections in which the four-year running mean of natural-origin female spawner abundance fell below a low-abundance threshold of 15 ($p^{QET}$) at least once over periods of increasing numbers of years (x-axis), calculated for projection years 11-50. Shaded envelope represents 90% quantiles from a bootstrap. Boxplots are of the $p^{QET}$ over the full 50-year projection period. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges.",display=FALSE)
+
+```
+
+
+```{r , echo=FALSE}
+
+## supplementary figure captions
+sup_fig_nums <- captioner("Figure S.",auto_space=FALSE)
+
+sup_fig_nums("CV_sup", "Boxplots of the coefficients of variation (CV) of simulated natural-origin returns to Tumwater Dam in in 2020-2069. *Mean* represents weighted averages of CVs of juvenile life history pathways within individual streams, whereas *Total* represents the CV of the sum of adults across life history pathways. The thick lines represent the median CV across 15,000 projections, the boxes span the interquartile range and the whiskers span the 90% quantile range. ",display=FALSE)
+
+
+
+sup_fig_nums("pHOS", "Proportion of spawners that were of hatchery origin ($p^{{HOS}}$) by year and natal stream. Boxplots are of the average $p^{HOS}$ in in 2020-2069. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges.",display=FALSE)
+
+
+sup_fig_nums("pNOB", "Proportion of broodstock that are of natural origin ($p^{NOB}$) by hatchery program and year. Boxplots are of the average $p^{{NOB}}$ in 2020-2069 by hatchery program. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges.",display=FALSE)
+
+sup_fig_nums("pNI", "Proportionate natural influence (PNI) by hatchery program and year. Boxplots are of the average PNI in in 2020-2069 by hatchery program. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges.",display=FALSE)
+
+
+
+sup_fig_nums("cor_chiw", "Correlations between parameters and derived quantities across posterior samples. *\u03b1*, *\u03b3*, and *Jmax* are parameters in models of the production of juveniles emigrating as subyearlings in spring (*Spr.0*), summer (*Sum.0*), and (*fall.0*), and yearlings in spring (*Spr.0*). These parameters were all log transformed before correlation was assessed. *Time 1 \u3D5* represents survival between emigrating from the natal stream and entering the mainstem Columbia River migration corridor, which includes the overwinter period for downstream-rearing juvenile life histories. *\u3D5 DS* represents downstream survival between entering the main stem of the Columbia River and passing Bonneville Dam as juveniles, and *DSR* represents all downstream-rearing life history pathways. *SAR* are smolt to adult returns from and to Bonneville Dam. *\u3D5 US* is upstream survival from Bonneville Dam to Tumwater Dam. *% age* is the percent of fish returning at a given age. *\u3D5 PS* is survival rate between passing Tumwater Dam and spawning. *RRS* is the reproductive success of hatchery-origin spawners relative to natural-origin spawners. All rates were logit transformed prior to calculating correlations.",display=FALSE)
+
+
+sup_fig_nums("cor_nason", "Correlations between parameters and derived quantity values across posterior samples.",display=FALSE)
+
+
+sup_fig_nums("cor_white", "Correlations between parameters and derived quantity values across posterior samples.",display=FALSE)
+
+
+sup_fig_nums("traj_all", "Female spawner abundance in three natal streams by year. Points represent observations of redds, which the model was fit to. Lines represents medians across simulations, dark shaded envelopes represent interquartile ranges, and light shaded envelopes represent 90% quantile ranges. Boxplots are of the geometric mean abundance in years 2020-2069 across projections. Horizontal lines represent medians, boxes span interquartile ranges and whiskers span 90% quantile ranges.",display=FALSE)
+
+```
+
+
+
+
+
+
+
+
+\newpage  
+
+The median across simulations of the geometric mean abundance of projected natural-origin female spawners in (`r sim_sum_yrs_actual`) was `r geoMean_wild_females_boxplot$geo_mean_sum[3,1] %>% formatC(0,format="f")` (90% quantile range = `r geoMean_wild_females_boxplot$geo_mean_sum[c(1,5),1] %>% formatC(0,format="f") %>% paste(collapse=" -- ")`) in the Chiwawa River, `r geoMean_wild_females_boxplot$geo_mean_sum[3,2] %>% formatC(0,format="f")` (`r geoMean_wild_females_boxplot$geo_mean_sum[c(1,5),2] %>% formatC(0,format="f") %>% paste(collapse=" -- ")`) in Nason Creek, `r geoMean_wild_females_boxplot$geo_mean_sum[3,3] %>% formatC(0,format="f")` (`r geoMean_wild_females_boxplot$geo_mean_sum[c(1,5),3] %>% formatC(0,format="f") %>% paste(collapse=" -- ")`) in the White River, and `r geoMean_wild_females_boxplot$geo_mean_sum[3,4] %>% formatC(0,format="f")` (`r geoMean_wild_females_boxplot$geo_mean_sum[c(1,5),4] %>% formatC(0,format="f") %>% paste(collapse=" -- ")`) in total across all three streams (`r fig_nums("traj_wild",display="cite")`). The probability that the four year running mean of natural-origin female spawner abundance dropped below 15 between the 11th and 50th year of the projection was `r pQET_boot_quant[1,3] %>% as.numeric() %>% formatC(2,format="f")` (`r pQET_boot_quant[1,c(1,5)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in the Chiwawa River, `r pQET_boot_quant[2,3] %>% as.numeric() %>% formatC(2,format="f")` (`r pQET_boot_quant[2,c(1,5)] %>% as.numeric() %>%  formatC(2,format="f") %>% paste(collapse=" -- ")`) in Nason Creek, `r pQET_boot_quant[3,3] %>% as.numeric() %>% formatC(2,format="f")` (`r pQET_boot_quant[3,c(1,5)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in the White River, and `r pQET_boot_quant[4,3] %>% as.numeric() %>% formatC(2,format="f")` (`r pQET_boot_quant[4,c(1,5)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) for the three streams combined (`r fig_nums("pQET_troj",display="cite")`). 
+
+
+The average projected proportion of hatchery-origin spawners ($p^\text{HOS}$) in (`r sim_sum_yrs_actual`) was `r mean_pHOS_out[1,4] %>% as.numeric() %>% formatC(2,format="f")` (90% quantile range = `r mean_pHOS_out[1,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in the Chiwawa River, `r mean_pHOS_out[2,4] %>% as.numeric() %>% formatC(2,format="f")` (`r mean_pHOS_out[2,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in Nason Creek, and `r mean_pHOS_out[3,4] %>% as.numeric() %>% formatC(2,format="f")` (`r mean_pHOS_out[3,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in the White River (`r sup_fig_nums("pHOS",display="cite")`). The average proportion of broodstock that were of natural-origin ($p^\text{NOB}$) in years 11--50 of projections was `r mean_pNOB_out[1,4] %>% as.numeric() %>% formatC(2,format="f")` (`r mean_pNOB_out[1,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in the Chiwawa River and `r mean_pNOB_out[2,4] %>% as.numeric() %>% formatC(2,format="f")` (`r mean_pNOB_out[2,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) in Nason Creek. The average PNI in projection years 11--50 for the Chiwawa River supplementation program was `r mean_pNI_out[1,4] %>% as.numeric() %>% formatC(2,format="f")` (90% quantile range = `r mean_pNI_out[1,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) and for the Nason Creek program it was `r mean_pNI_out[2,4] %>% as.numeric() %>% formatC(2,format="f")` (`r mean_pNI_out[2,c(2,6)] %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse=" -- ")`) (`r sup_fig_nums("pNI",display="cite")`).
+
+The average proportion of projected natural-origin adults returning to Tumwater Dam in (`r sim_sum_yrs_actual`) that had expressed a natal-reach-rearing LHP as juveniles was `r wild_female_spawner_props[3,4,1]  %>% as.numeric() %>% formatC(2,format="f")` (90% quantile = `r wild_female_spawner_props[c(1,5),4,1]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the Chiwawa River, `r wild_female_spawner_props[3,4,2]%>% formatC(2,format="f") %>% as.numeric()` (`r wild_female_spawner_props[c(1,5),4,2]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in Nason Creek, `r wild_female_spawner_props[3,4,3] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),4,3]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the White River, and `r wild_female_spawner_props[3,4,4] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),4,4]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) across all three streams (`r fig_nums("Tum_adult_returnYear",display="cite")`). The remaining adults had expressed downstream-rearing LHPs as juveniles. The average proportions of spawners that had emigrated as subyearling in fall was `r wild_female_spawner_props[3,3,1] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),3,1]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the Chiwawa River ,  `r wild_female_spawner_props[3,3,2]%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),3,2]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in Nason Creek, `r wild_female_spawner_props[3,3,3] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),3,3]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the White River, and `r wild_female_spawner_props[3,3,4] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),3,4]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) across all three streams. The proportions of adults that had emigrated as subyearlings during summer were `r wild_female_spawner_props[3,2,1] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),2,1]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the Chiwawa River, `r wild_female_spawner_props[3,2,2]%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),2,2]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in Nason Creek, `r wild_female_spawner_props[3,2,3] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),2,3]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) in the White River, and `r wild_female_spawner_props[3,2,4] %>% as.numeric()%>% formatC(2,format="f")` (`r wild_female_spawner_props[c(1,5),2,4]  %>% as.numeric() %>% formatC(2,format="f") %>% paste(collapse="--")`) across all three streams.
+
+
+On average across simulations, the CV of projected natural-origin adult abundance in (`r sim_sum_yrs_actual`) was `r percent_reduction_CV[3,1] %>% formatC(0,format="f")`% (90% quantile = `r paste(percent_reduction_CV[c(1,5),1]%>% formatC(0,format="f"),collapse="--")`%) lower than the weighted average of CVs across LHPs in the Chiwawa River, `r percent_reduction_CV[3,2]%>% formatC(0,format="f")`% (`r paste(percent_reduction_CV[c(1,5),2]%>% formatC(0,format="f"),collapse="--")`%) lower in Nason Creek, `r percent_reduction_CV[3,3]%>% formatC(0,format="f")`% (`r paste(percent_reduction_CV[c(1,5),3] %>% formatC(0,format="f"),collapse="--")`%) lower in the White River, and `r percent_reduction_CV[3,4]%>% formatC(0,format="f")`% (`r paste(percent_reduction_CV[c(1,5),4] %>% formatC(0,format="f"),collapse="--")`%) lower for the aggregate abundance across streams (`r fig_nums("CV",display="cite")`). The CV of the aggregate abundance across streams was`r percent_reduction_CV[3,5]%>% formatC(0,format="f")`% (`r paste(percent_reduction_CV[c(1,5),5] %>% formatC(0,format="f"),collapse="--")`%) lower than  
+the weighted average of CVsacross individual LHPs and natal streams, and `r percent_reduction_CV[3,6]%>% formatC(0,format="f")`% (`r paste(percent_reduction_CV[c(1,5),6] %>% formatC(0,format="f"),collapse="--")`%) lower than the weighted average of the CVs of the toal returns to individual streams. Returns of fish that had expressed the fall subyearling LHP had the lowest CV in each stream (`r sup_fig_nums("CV_sup",display="cite")`). Spring subyearlings had the largest CV in each stream (`r sup_fig_nums("CV_sup",display="cite")`), but made up the smallest fraction of returns (`r fig_nums("Tum_adult_returnYear",display="cite")`).
+
+\newpage  
+
+
+### Figures
+
+```{r map, echo=FALSE, out.width = '100%'}
+# knitr::include_graphics("2_panel_map_elev_9242021.png")
+```
+
+`r fig_nums("map")`
+
+
+```{r diagram, echo=FALSE, out.width = '100%'}
+# knitr::include_graphics("No Cov Chapter 3 model concept.jpeg")
+```
+
+`r fig_nums("IPM_diagram")`
+
+  
+```{r plot_CV, fig.height=6, fig.width=7}
+
+CV_streams_plot
+
+```
+
+
+`r fig_nums("CV")`
+
+\newpage
+
+```{r plot_abund_LHP}
+
+Tum_adult_returnYear
+
+```
+
+`r fig_nums("Tum_adult_returnYear")`
+
+\newpage
+```{r plot_wild_fem_traj}
+ggpubr::ggarrange(traj_plot_female_wild,geoMean_wild_females_boxplot$boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+
+
+
+
+```
+
+`r fig_nums("traj_wild")`
+
+\newpage
+```{r}
+ggpubr::ggarrange(QET_year_boot_quant,pQET_boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+
+```
+
+`r fig_nums("pQET_troj")`
+
+  
+\newpage
+
+### Supplemental figures
+
+```{r,fig.height=7}
+
+individual_LHPs_CV
+
+```
+
+`r sup_fig_nums("CV_sup")`
+
+
+\newpage
+
+```{r}
+
+ggpubr::ggarrange(traj_pHOS,mean_pHOS_boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+
+```
+
+`r sup_fig_nums("pHOS")`
+
+\newpage
+
+```{r}
+
+ggpubr::ggarrange(traj_pNOB,mean_pNOB_boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+
+```
+
+`r sup_fig_nums("pNOB")`
+
+\newpage
+
+```{r}
+
+ggpubr::ggarrange(traj_pNI,mean_pNI_boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+```
+
+`r sup_fig_nums("pNI")`
+
+
+\newpage
+```{r}
+
+ggpubr::ggarrange(traj_plot_female_all_spawners,geoMean_all_females_boxplot$boxplot,nrow=1,heights=c(5.5,5.5),widths=c(7,3))
+```
+
+`r sup_fig_nums("traj_all")`
+
+
+## Appendix sensititivy analysis
+
+To assess the effect of parameter uncertainty on uncertainty in projected future abundance, we examined the correlation between parameter values or derived quantities from posterior samples and the geometric mean abundance of natural-origin female spawners in projection years 11--50 generated using those parameter values (`r tab_nums("sensitivity_tab",display="cite")`). For the Chiwawa River, natural-origin female spawner abundance was most correlated with the expected smolt-to-adults return rate of natal-reach-rearing emigrants, followed by the  return rate of downstream-rearing emigrants. The relative reproductive success of hatchery-origin spawners (RRS) was negatively correlated with projected abundance. However, this was likely because RRS was negatively correlated with several of the $\alpha$ and $\gamma$ parameters in the models of natural juvenile productivity (`r sup_fig_nums("cor_chiw",display="cite")`).
+
+Projected abundance in Nason Creek was positively correlated with smolt-to-adult return rates of downstream-rearing emigrants and to a lesser degree with return rates of natal-reach-rearing emigrants (`r tab_nums("sensitivity_tab",display="cite")`). Abundance was also positively correlated with $\alpha$ parameters in  models of juvenile emigrant production, especially for the fall subyearling LHP. 
+
+
+Projected abundance in the White river was most positively correlated with the $\alpha$ parameter in the model of natal-reach-rearing emigrant production (`r tab_nums("sensitivity_tab",display="cite")`). Counterintuitively, abundance was negatively correlated with the $\gamma$ parameter for natal-reach rearing emigrant production. However, this may have been because the the $\alpha$ and $\gamma$ parameters for natal-reach rearing production were negatively correlated with one another (`r cor_white["\u03b1 Spr.0","\u03b3 Spr.0"] %>% formatC(2,format="f")` Pearson correlation coefficient) (`r sup_fig_nums("cor_white",display="cite")`). Abundance was positively correlated with smolt-to-adult return rates of natal-reach rearing fish. 
+
+
+`r tab_nums("sensitivity_tab")`
+
+```{r print_sensitivity_table,fig.height=9}
+
+# sensitivity_table
+sensitivity_table_2
+```
+
+
+\newpage
+```{r,fig.height=7, fig.width=7}
+
+corrplot::corrplot(cor_chiw,diag=FALSE,type="lower",tl.col="black",tl.cex = .85)
+```
+
+`r sup_fig_nums("cor_chiw")`
+
+\newpage
+```{r,fig.height=7, fig.width=7}
+
+corrplot::corrplot(cor_nason,diag=FALSE,type="lower",tl.col="black",tl.cex = .85)
+```
+
+`r sup_fig_nums("cor_nason")`
+
+\newpage
+```{r ,fig.height=7, fig.width=7}
+
+corrplot::corrplot(cor_white,diag=FALSE,type="lower",tl.col="black",tl.cex = .85)
+```
+
+`r sup_fig_nums("cor_white")`
