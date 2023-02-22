@@ -1,0 +1,513 @@
+---
+title: "Covariate simulation"
+author: "mark sorel"
+date: "10/5/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+
+
+
+
+
+```{R message=TRUE, warning=FALSE, echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+library(here)
+library(tidyverse)
+library(readxl)
+library(MARSS)
+```
+
+
+
+
+```{r data_read, echo=FALSE,fig.height=8}
+  here::i_am("src/Wen_spchk_IPM_4_non_centered_pHOS_par.cpp")
+  setwd(here("Wenatchee-screw-traps"))
+  here::i_am("src/covariates.R")
+
+#load tributary discharge covariates
+source(here("src","covariates.r"))
+
+flow_covs_wide<-full_join(flow_covs$winter_high %>% #original Winter flow year is the year when winter started
+                            mutate(Year=Year+1), #change to year when winter ends
+                          flow_covs$summer_low,by="Year",suffix = c("_win_flow", "_sum_flow"))%>% arrange(Year) %>% filter(Year>=1975) %>% mutate(across(Chiwawa_sum_flow:White_sum_flow,log)) 
+
+flow_covs_long<-flow_covs_wide %>% pivot_longer(cols = 2:7,names_to="var",values_to="value")
+
+  here::i_am("src/Wen_spchk_IPM_4_non_centered_pHOS_par.cpp")
+  setwd(here("Wenatchee-survival"))
+  here::i_am("src/Wen_MSCJS_re_4_cont_cov.r")
+
+#load multistate model environmental data covariates
+if(file.exists(here("Data","env_dat.csv"))){
+  env_dat<-read.csv(here("Data","env_dat.csv"))
+}else{
+  source(here("src","Env data funcs.r"))
+  env_dat<-get_dat()
+  write.csv(env_dat,file=here("Data","env_dat.csv"))
+}
+
+ env_dat_select<-env_dat %>%  select(mig_year,win_air,ersstWAcoast.sum,cui.spr) %>% distinct()%>% 
+   rename(Year=mig_year) %>% arrange(Year) #%>% rename("Wen_win_air"="win_air","Upwelling_spr"="cui.spr",
+    # "SST_sum"="ersstWAcoast.sum")
+   
+   
+   #%>% mutate(across(2:last_col(),scale))
+
+env_dat_select_long<-env_dat_select %>% pivot_longer(cols = 2:last_col(),names_to="var")
+
+all_env<-full_join(env_dat_select,flow_covs_wide) 
+
+all_env_long<-all_env %>% pivot_longer(cols = 2:last_col(),names_to="var",values_to="value") %>% 
+  
+  mutate(
+         var=fct_relevel(var,c("Chiwawa_win_flow", "Nason_win_flow",   "White_win_flow",
+                           "Chiwawa_sum_flow", "Nason_sum_flow",   "White_sum_flow",
+                           "win_air" ,  "cui.spr"     ,   "ersstWAcoast.sum" )))
+
+
+
+```
+
+
+<!-- fit models -->
+```{r models, echo=FALSE, cache=TRUE,results = FALSE}
+
+
+# Z_score the data
+dat.z.long<-all_env[,-1] %>% scale()
+dat.z<-dat.z.long %>% t()
+
+
+library(here)
+library(tidyverse)
+library(MARSS)
+
+# read data
+# dat.z<-read.csv(here("data","dat_z.csv"), row.names = 1) %>% as.matrix()
+
+
+# fit models
+
+# set new control params
+cntl.list <- list( maxit = 2000)
+
+
+#------------------------------------------------------------
+## log flow covariates
+B<-c("identity","diagonal and equal","diagonal and unequal")
+Q<-c("diagonal and equal","diagonal and unequal","zero")
+R<-c("diagonal and equal")
+U<-c("zero","unequal")
+# C<-list("zero", "diagonal and unequal")
+# c_mat<-matrix(seq(ncol(dat.z[4:9,-(1:92)])),nrow=2,ncol=ncol(dat.z[4:9,-(1:92)]),byrow = TRUE)
+
+
+
+
+
+Z <- matrix(c(rep(1, 3), rep(0, 6), rep(1, 3)), nrow = 6)
+
+
+out_list<-list()
+model.data <- data.frame(stringsAsFactors = FALSE)
+# fit models & store results
+for (b in B) {
+  for (q in Q) {
+    for(u in U){
+          if(!(q=="zero" & b!="identity")){  
+      model <- list(R = R, B=b, Q=q, Z=Z, U = u)
+      kemz <- MARSS::MARSS(dat.z[4:9,-(1:92)],
+                           model = model, control = cntl.list)
+      model.data <- rbind(
+        model.data,
+        data.frame(
+          B = b,
+          Q = q,
+          U= u,
+          logLik = kemz$logLik,
+          K = kemz$num.params,
+          AICc = kemz$AICc,
+          stringsAsFactors = FALSE
+        )
+      )
+      assign(paste("kemz", b,q,u, sep = "."), kemz)
+      out_list[[paste("kemz", b,q,u, sep = ".")]]<-kemz
+    } # end b loop
+  } # end q loop
+} # end of U loop
+}
+
+
+model.data %>% arrange(AICc)
+
+
+
+# model.data %>% arrange(AICc)
+
+flow_mod<-MARSS::MARSSparamCIs(out_list[[which.min(model.data$AICc)]])
+
+#------------------------------------------------------------
+
+## air temp 
+
+
+B<-c("identity","diagonal and equal")
+U<-c("zero","unequal")
+# C<-list("zero", "diagonal and equal")
+# c_mat<-matrix(seq(length(dat.z[1,-(1:59)])),nrow=1)
+R<-list(matrix("R"),"zero")
+Q<-c("zero","diagonal and equal")
+out_list_temp<-list()
+model.data_temp <- data.frame(stringsAsFactors = FALSE)
+# fit models & store results
+
+for (b in B) {
+  for (u in U) {
+        for (q in Q) {
+          for ( r in R){
+    if(!(b == "diagonal and equal" & u == "unequal")&
+       !(b == "diagonal and equal" & q == "zero")&
+       !(r == "zero" & q == "zero")) {
+    
+    model <- list( B=b, U = u, R = r,Q=q)
+    kemz <- MARSS::MARSS(dat.z[1,-(1:59)],
+                         model = model, control = cntl.list)
+    model.data_temp <- rbind(
+      model.data_temp,
+      data.frame(
+        B = b,
+        U = u,
+        Q=q,
+        R=r,
+        logLik = kemz$logLik,
+        K = kemz$num.params,
+        AICc = kemz$AICc,
+        stringsAsFactors = FALSE
+      )
+    )
+   
+    assign(paste("kemz", b,u,q,r, sep = "."), kemz)
+    out_list_temp[[paste("kemz", b,u,q,r, sep = ".")]]<-kemz
+    }
+  } # end b loop
+} # end U loop
+  }
+}
+model.data_temp %>% arrange(AICc)
+
+temp_mod<-MARSS::MARSSparamCIs(out_list_temp[[which.min(model.data_temp$AICc)]])
+#------------------------------------------------------------
+## upwelling  
+
+B<-c("identity","diagonal and equal")
+U<-c("zero","unequal")
+# C<-list("zero", matrix("D"))
+# c_mat<-matrix(seq(length(dat.z[3,-(1:47)])),nrow=1)
+Q<-c("zero","diagonal and equal")
+R<-list(matrix("R"),"zero")
+
+out_list_upwelling <-list()
+model.data_upwelling <- data.frame(stringsAsFactors = FALSE)
+# fit models & store results
+
+for (b in B) {
+  for (u in U) {
+        for (q in Q) {
+          for ( r in R){
+    if(!(b == "diagonal and equal" & u == "unequal")&
+       !(b == "diagonal and equal" & q == "zero")&
+       !(r == "zero" & q == "zero")) {
+    
+    model <- list( B=b, U = u, R = r,Q=q)
+    kemz <- MARSS::MARSS(dat.z[3,-(1:47)],
+                         model = model, control = cntl.list)
+    model.data_upwelling <- rbind(
+      model.data_upwelling,
+      data.frame(
+        B = b,
+        U = u,
+        Q=q,
+        R=r,
+        logLik = kemz$logLik,
+        K = kemz$num.params,
+        AICc = kemz$AICc,
+        stringsAsFactors = FALSE
+      )
+    )
+    
+    assign(paste("kemz", b,u,q,r, sep = "."), kemz)
+    out_list_upwelling[[paste("kemz", b,u,q,r, sep = ".")]]<-kemz
+    }
+  } # end b loop
+} # end U loop
+}}
+
+model.data_upwelling %>% arrange(AICc)
+
+# model.data_upwelling %>% arrange(AICc)
+
+
+# acf(c(out_list_upwelling$kemz.identity.unequal$states-
+#         out_list_upwelling$kemz.identity.unequal$ytT))
+upwelling_mod<-MARSS::MARSSparamCIs(out_list_upwelling[[which.min(model.data_upwelling$AICc)]])
+acf(na.exclude(residuals(upwelling_mod)$.resids))
+#------------------------------------------------------------
+## Sea surface temperature 
+
+B <- c("identity","diagonal and equal")
+U<-c("zero","unequal")
+# C<-c("zero", "diagonal and equal")
+# c_mat<-matrix(seq(length(dat.z[2,-120:-121])),nrow=1)
+Q<-c("zero","diagonal and equal")
+R<-list(matrix("R"),"zero")
+
+out_list_SST <-list()
+model.data_SST <- data.frame(stringsAsFactors = FALSE)
+# fit models & store results
+
+for (b in B) {
+  for (u in U) {
+        for (q in Q) {
+          for ( r in R){
+    if(!(b == "diagonal and equal" & u == "unequal")&
+       !(b == "diagonal and equal" & q == "zero")&
+       !(r == "zero" & q == "zero")) {
+    
+    model <- list( B=b, U = u, R = r,Q=q)
+
+    kemz <- MARSS::MARSS((dat.z[2,-120:-121]),
+                         model = model, control = cntl.list)
+    model.data_SST <- rbind(
+      model.data_SST,
+      data.frame(
+        B = b,
+        U = u,
+        Q=q,
+        R=r,
+        logLik = kemz$logLik,
+        K = kemz$num.params,
+        AICc = kemz$AICc,
+        stringsAsFactors = FALSE
+      )
+    )
+  
+    assign(paste("kemz", b,u,q,r, sep = "."), kemz)
+    out_list_SST[[paste("kemz", b,u,q,r, sep = ".")]]<-kemz
+    }
+  } # end b loop
+} # end U loop
+}
+}
+
+SST_mod<-MARSS::MARSSparamCIs(out_list_SST[[which.min(model.data_SST$AICc)]])
+
+model.data_SST %>% arrange(AICc)
+# out_list_SST$`kemz.diagonal and equal.zero`
+# out_list_SST$kemz.identity.unequal
+
+
+
+# plot.ts(dat.z["SST_spr",])
+# lines(t(out_list_SST$kemz.identity.zero$states), col = "blue")
+# 
+# plot.ts(t(MARSSresiduals(out_list_SST$`kemz.diagonal and equal.zero`
+# )$state.residuals))
+# 
+# abline(h=0)
+# acf(as.vector(MARSSresiduals(out_list_SST$kemz.identity.zero)$state.residuals[-121]))
+
+
+
+
+
+```
+
+```{r,echo=FALSE}
+#function to reformat model comparison table
+table_reformat<-function(tab){
+  
+  if("R"%in%colnames(tab)){ 
+  
+   tab<-tab %>% 
+    mutate(R=case_when(R=="R"~"Yes",
+                       R=="zero"~"No"
+                       ),
+           U=case_when(U=="zero"~"None",
+                       U=="unequal"~"Bias",
+                       TRUE~U)) %>%
+    rename("Observation error" = R)
+
+ }
+  
+  
+  if("Q"%in%colnames(tab)){ 
+  
+   tab<-tab %>% 
+    mutate(B=case_when(Q=="zero" ~ "None",
+                       B=="identity"~"Random walk",
+                       B=="diagonal and equal"~"Common AR(1)",
+                       B=="diagonal and unequal"~"Unique AR(1)",
+                       ),
+           U=case_when(U=="unequal"~"Unique",
+                       TRUE~U),
+           Q=case_when(Q=="diagonal and equal"~"IID",
+                       Q=="diagonal and unequal"~"INID",
+                       Q=="zero" ~"None")
+           ) %>%
+    rename("Process error variance" = Q)
+
+ }
+    
+  
+  tab<- tab%>%
+   
+    mutate(B=case_when(B=="identity"~"Random walk",
+                       B=="diagonal and equal"~"AR(1)",
+                       B=="diagonal and unequal"~"AR(1)",
+                       TRUE~B)
+           ) %>%
+    rename("Model form"=B,
+           "Bias" =U
+           ) 
+  
+  
+ 
+   tab %>%
+     arrange(AICc) %>% 
+    mutate("$\\Delta AICc$"=AICc-min(AICc)) %>%
+    select(-AICc) %>%
+    mutate(across(c(logLik,last_col()),round,1)) 
+     
+}
+```
+
+
+```{r}
+#simulate data
+
+simulate<-function(mod){
+  sim_mod<-mod
+  #replace x_0
+  sim_mod$par$x0<-sim_mod$states[,dim(sim_mod$states)[2]]
+  
+  sim<-MARSS::MARSSsimulate(sim_mod,nsim=500,tSteps=56)
+ 
+  sim$sim.data 
+}
+
+set.seed(1234)
+all_sims<-lapply(list(temp_mod,SST_mod,upwelling_mod, flow_mod),simulate)
+
+all_sims_array<-abind::abind(all_sims,along=1)
+
+#un Z-score
+transformed_sim<-all_sims_array*attr(dat.z.long,"scaled:scale")+attr(dat.z.long,"scaled:center")
+
+MARSS_sim<-list(all_env=all_env,transformed_sim=transformed_sim)
+save(MARSS_sim, file = here("MARSS_sim_8_5_2022.Rdata"))
+
+all_sims_quant<-transformed_sim %>% apply(1:2,quantile,probs=c(.05,.5,.95))
+
+
+
+env_long_with_proj<-matrix(all_sims_quant,ncol=3,byrow = TRUE) %>% `colnames<-`(c("low","mid","high")) %>% as_tibble() %>% 
+  mutate(var=rep(colnames(all_env)[-1],times=56),
+Year=rep(seq.int(from=2021,length.out = 56),each=length(colnames(all_env)[-1]))) %>% bind_rows(all_env_long)
+
+```
+
+
+### Methods 
+There were nine environmental variables used in the integrated population model, which we needed to simulate future time series of to use as covariates in population projections. The variables were winter and summer discharge in each of three natal streams (total of six variables), winter air temperature in the Wenatchee River Basin, average coastal upwelling anomaly data for 45°N by 125°W from March through May, and average sea surface temperature within a 2° x 2° square (46°–48°N by 124°–126°W) off the Washington Coast during June–August. Details on the covariate data and their sources are provided in appendices S.1 and S.2.
+
+To simulate time series of environmental variables, we fit time-series models using the MARSS package in R, and simmulated projections using the *MARSS::MARSSsimulate* function. While the IPM was fit to 21 years of data, we fit the time-series models to data that extended further back in time to provide more statistical power (Figure 1). The longest time series was of summer sea surface temperature, which extended back to 1900, whereas upwelling extended back to `r env_dat$Year[48]`, air temperature to `r env_dat$Year[60]`, and stream discharge to `r env_dat$Year[93]` in the Chiwawa River and `r env_dat$Year[110]` in Nason Creek and the White River. We log transformed stream flow covariates before fitting the model to ensure that there was no support for negative flows, whereas the temperature covariates could be negative and the upwelling covariate was an anomaly from the average and could therefore also be negative.
+
+Streamflow was highly correlated among natal streams within seasons(summer and winter), and we therefore modeled it as three observations of a single latent trend for each season. We evaluated models with different specifications of latent trends, where they could be biased or unbiased non-stationary random walks or lag-1 autocorrelated stationary trends [AR(1)] with common or unique autocorrelation coefficients.We allowed process error variances to be either common or unique between seasons in the random walk and AR(1) models. We also evaluated models with no latent trend, but which could have bias, equivalent to a linear regression with an effect of time. In all models, observation errors were assumed to be independent and identically distributed among years, natal-streams, and seasons. Data support for different models was based on the Akaike Information Criteria, with correction for small sample size (AICc).
+
+
+Because air temperature, upwelling, and sea surface temperature were not strongly correlated, we fit unique models for each covariate. We evaluated candidate models with the same specification of trends as were evaluated for log flow -- biased and unbiased non-stationary random walks, AR(1), and no latent trend. Models either assumed that observation error was negligible, because air temperature and sea surface temperature are measured with high precision and the upwelling covariate is a derived product, or included process error. upport for different model specifications was evaluated based on AICc. 
+
+### Results
+
+The most supported model of streamflow based on AICc had AR(1) latent states with a shared autocorrelation coefficient and process variance (Table 1). The autoccorelation coefficient for the log streamflow covariates was `r flow_mod$par$B %>% c() %>% round(2) ` (95% CI = `r flow_mod$par.lowCI$B %>% c() %>% round(2)`, `r flow_mod$par.upCI$B %>% c() %>% round(2)`). The most supported models for air temperature was AR(1) with autocorrelation coefficient  `r temp_mod$par$B %>% c() %>% round(2) ` (`r temp_mod$par.lowCI$B %>% c() %>% round(2)`, `r temp_mod$par.upCI$B %>% c() %>% round(2)`) and no observation error (Table 2). For upwelling, the most supported model had no latent trend but bias with a slope of `r upwelling_mod$par$U %>% c() %>% round(2) ` (`r upwelling_mod$par.lowCI$U %>% c() %>% round(2)`, `r upwelling_mod$par.upCI$U %>% c() %>% round(2)`) standard deviations per year, and observation error (Table 3). The best model of sea surface temperature also had no latent trend but bias with a slope of  `r SST_mod$par$U %>% c() %>% round(2) ` (`r SST_mod$par.lowCI$U %>% c() %>% round(2)`, `r SST_mod$par.upCI$U %>% c() %>% round(2)`) standard deviations per uear and observation error (Table 4).
+
+
+Table 1. $\Delta$ Akaike Information Criteria scores for models of log stream flow. The model form could be a *random walk* or a stationary autoregressive model of order 1, *AR(1)*, with unique or common autocorrelation coefficients between seasons. Process error variance could be *IID* = independent and identically distributed or *INID* = independent and not identically distributed. There could be no bias, or unique bias for the two seasons. *logLik* is the log likelihood and *K* is the number of parameters in the model.
+
+```{r,echo=FALSE}
+
+knitr::kable(table_reformat(tab=model.data))
+```
+
+
+
+Table 2.  $\Delta$ Akaike Information Criteria scores for models of winter air temperature. The model form could be a *random walk* or a stationary autoregressive model of order 1, *AR(1)*. *logLik* is the log likelihood and *K* is the number of parameters in the model.
+
+```{r,echo=FALSE}
+
+knitr::kable( table_reformat(tab=model.data_temp))
+```
+
+Table 3.  $\Delta$ Akaike Information Criteria scores for models of spring coastal upwelling. The model form could be a *random walk* or a stationary autoregressive model of order 1, *AR(1)*. *logLik* is the log likelihood and *K* is the number of parameters in the model.
+
+```{r,echo=FALSE}
+
+knitr::kable( table_reformat(tab=model.data_upwelling))
+```
+
+
+Table 4. $\Delta$ Akaike Information Criteria scores for models of summer sea surface temperature. The model form could be a *random walk* or a stationary autoregressive model of order 1, *AR(1)*. *logLik* is the log likelihood and *K* is the number of parameters in the model.
+```{r,echo=FALSE}
+
+knitr::kable( table_reformat(tab=model.data_SST))
+```
+
+
+
+
+
+```{r,echo=FALSE,fig.height=7,fig.width=6}
+
+
+ggplot(env_long_with_proj %>% 
+         mutate(var=case_when(var=="Chiwawa_win_flow"~"Chiwawa winter flow",
+                              var=="Nason_win_flow"~"Nason winter flow",   
+                              var=="White_win_flow"~"White winter flow",
+                              var=="Chiwawa_sum_flow"~"Chiwawa summer flow",
+                              var=="Nason_sum_flow"~"Nason summer flow",
+                              var=="White_sum_flow"~"White summer flow",
+                              var=="win_air" ~ "Wenatchee winter air temperature",
+                              var=="cui.spr"~"Spring Upwelling",
+                              var=="ersstWAcoast.sum"~"Summer sea surface temperature"),
+       
+       
+       var=fct_relevel(var,c("Chiwawa winter flow",
+"Nason winter flow",
+"White winter flow",
+"Chiwawa summer flow",
+"Nason summer flow",
+"White summer flow",
+"Wenatchee winter air temperature", 
+"Spring Upwelling",
+"Summer sea surface temperature" ))),
+       
+       aes(Year,value,group=var))+geom_point(size=1)+geom_line()+facet_wrap(~var,scales="free_y",ncol=2)+
+  geom_ribbon(aes(ymin=low,ymax=high),alpha=.5)+
+  geom_line(aes(y=mid))
+  
+  
+  # geom_smooth(method="lm")
+
+
+```
+
+Figure 1. Time series of environmental variable data, which the model was fit to, and simulations of future data. The black line in the projections represents annual medians from 100 simulated time series and the shaded envelope spans 90% quantiles of simulated annual values.
+
+
+
+
