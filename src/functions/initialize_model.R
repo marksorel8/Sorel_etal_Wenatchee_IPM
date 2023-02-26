@@ -15,7 +15,7 @@ initialize_model<-function(){
   
 
 #intialize
-  mod<-TMB::MakeADFun(data=input$dat_IPM,parameters = input_test2,
+  mod<-TMB::MakeADFun(data=input$dat_IPM,parameters = input$par_IPM,
                       random=c(unique(input$rand_par_IPM)),
                       map=input$map[1:2],DLL ="Wen_spchk_IPM",silent = FALSE,
                       inner.control = list(maxit = 1000))

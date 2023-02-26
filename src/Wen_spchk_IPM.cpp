@@ -1023,7 +1023,7 @@ Type objective_function<Type>::operator() ()
   for(int i =1; i<Loadings_vec.size(); i++){
     jnll -= dnorm(Type(Loadings_vec(i)),Type(0),Type(exp(log_sigma_loading)),true);
   }
-  jnll -=dexp(exp(log_sigma_loading),exp(rate))+log_sigma_loading;
+  jnll -=dexp(exp(log_sigma_loading),(rate))+log_sigma_loading;
   
   
   //Ridge prior on environmental covariates
