@@ -578,6 +578,7 @@ Type objective_function<Type>::operator() ()
   vector<Type> eta_p = X_p*beta_p;
   eta_psi = X_psi*beta_psi;
   
+
   
   SIMULATE {
     ////projection
@@ -591,6 +592,7 @@ Type objective_function<Type>::operator() ()
   eta_p += Z_p*b_p;
   eta_psi += Z_psi*b_psi;
   
+
   
   SIMULATE {
     //////projection
@@ -619,6 +621,9 @@ Type objective_function<Type>::operator() ()
   }
   
   
+  ADREPORT(eta_phi);
+  ADREPORT(eta_p);
+  ADREPORT(eta_psi);
   
   // Apply link
   vector<Type> phi=invlogit(eta_phi);
@@ -928,7 +933,7 @@ Type objective_function<Type>::operator() ()
               A_tum(slt,a) *= Type(phi(phi_ind(slt,nDS_OCC+1+a*nUS_OCC+o)));
             }// end loop over upstream occasions
             
-            if((((t+a+3)<(last_t+proj_years)))){ //don't include jacks in returning spawners, don't bother with fish returning >3 years after the last modeled brood year.
+            if((((t+a+3)<(last_t+proj_years)))){ // don't bother with fish returning >3 years after the last modeled brood year.
               SIMULATE{
               A_tum_y(t+3+a,s,l,a)= Type(A_tum(slt,a));
               }
