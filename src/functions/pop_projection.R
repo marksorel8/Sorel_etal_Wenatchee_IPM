@@ -164,10 +164,9 @@ pop_projection<-function(){
           count_ts<-count_ts+1
           sim_pHOS[t,s,count]<-sim$pHOS[count_ts]               #pHOS
           
-          if(t>=(dat_IPM$first_t[s]+6)){
-            count_ts2<-count_ts2+1
-            sim_p_female[t,s,count]<-sim$p_female[count_ts2]       #pFemale
-          }
+       
+            sim_p_female[t,s,count]<-sim$p_female[count_ts]       #pFemale
+       
           
           if(t<=(total_years-3)){#end juvenile production calculation after fourth to last year
             for(l in 1:dat_IPM$n_l){
@@ -232,11 +231,7 @@ pop_projection<-function(){
                  sim_out=sim_out,
                  sim_pHOS=sim_pHOS,
                  sim_p_female=sim_p_female,
-                 # J_pred=J_pred,
-                 # J_LW=J_LW,
-                 # J_bon=J_bon,
                  A_tum=A_tum,
-                 # sim_S_wild=sim_out*(1-sim_pHOS),
                  sim_NOB=sim_NOB)
   
   # save
