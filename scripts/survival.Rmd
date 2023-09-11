@@ -1,0 +1,351 @@
+---
+title: "Survival"
+output:
+  word_document: default
+  html_document: default
+date: "2023-08-27"
+---
+
+```{r include-FALSE, message=FALSE, warning=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r load_packages, message=FALSE, warning=FALSE}
+library(here)
+library(TMB)
+library(TMBhelper)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(forcats)
+library(viridisLite)
+library(readxl)
+```
+
+
+```{r map_caption, echo=FALSE}
+library(captioner)
+fig_nums <- captioner()
+
+fig_nums("time_1_surv", "Annual survival estimates between release near the mouths of three natal streams -- Chiwawa River, Nason Creek, and White River -- and passing the mouth of the Wenatchee River en route to the ocean, for fish expressing three different juvenile life history pathways. The three juvenile life history pathways are fish that emigrated from their natal stream as subyearlings in summer (*Sum.0*) or fall (*Fal.0*), or as yearlings in spring (*Spr.1*). Points represent mean estimates and lines span 95% confidence intervals.",display=FALSE)
+
+fig_nums("time_2_4_surv", "Annual survival estimates between the mouth of the Wenatchee River and McNary Dam (top row), between McNary Dam and Bonneville Dam (middle row),and adult return rates between passing downstream of Bonneville Dam as a juvenile and returning from the ocean to Bonneville Dam as an adult between one and three years later (bottom row). Different juvenile life history pathways are shown in different columns of panels and natal streams are indicated by color. Points represent mean estimates and lines span 95% confidence intervals")
+
+
+fig_nums("adult_props", "Maximum likelihood estimates of age proportions of returning adult salmon from the ocean by juvenile life history pathway year.")
+
+sup_fig_nums <- captioner(prefix = "Appendix 1: Fig. S",auto_space=FALSE)
+
+
+sup_fig_nums("Env_cov", "Effects of environmental covariates on survival by occasion (column) and juvenile life history pathway (color). The three juvenile life history pathways are fish that emigrated from their natal stream as subyearlings in summer (*Sum.0*) or fall(*Fal.0*), or as yearlings in spring (*Spr.1*). *DSR* represents both downstream-rearing life histories (summer and fall subyearlings).  *CUI.spr* = coastal upwelling index during spring, *SST.sum* = sea surface temperature off the Washington coast during summer. Points represent mean estimates and lines span 95% confidence intervals.")
+
+
+
+
+sup_fig_nums("time_5_6_surv", "Annual survival estimates for upstream migrating adult Chinook salmon between Bonneville Dam and McNary Dam (top row) and McNary Dam and Tumwater Dam (bottom row), where color represents adult age. Points represent mean estimates and lines span 95% confidence intervals.")
+
+sup_tab_nums <- captioner(prefix = "Appendix 1: Table S",auto_space=FALSE)
+
+sup_tab_nums("RE", "random effects of year included in models of: $\\phi$ - survival probabilities following each capture occasion, $\\psi$ - probabilities of fish returning from the ocean at different ages , and $p$ - detection probabilities on each occasion. *LHP* = juvenile life history strategy, and *NR.DS* = juvenile life history pathways where summer and fall subyearlings are grouped (i.e., natal-reach vs.downstream rearing). Detection probability at Tumwater Dam for adults was assumed to be 1.0.")
+
+sup_tab_nums("phi_mean", "Estimates of survival across years by occasion, juvenile life history, natal stream, and fish age. The three juvenile life history pathways are fish that emigrated from their natal stream as subyearlings in summer (*Sum.0*) or fall (*Fal.0*), or as yearlings in spring (*Spr.1*). *DSR* represents both downstream-rearing life histories (summer and fall subyearlings) on occasions when they were assumed to be the same. *LHP* = life history pathway, *Lcl* = lower 95% confidence limit and *ucl* = upper 95% confidence limit." )
+
+sup_tab_nums("psi_mean", "Estimates of proportions of fish returning at ages three through five across years by occasion, juvenile life history, natal stream, and fish age. *DSR* = downstream-rearing life histories (summer and fall subyearling emigrants) and *Spr.1* = natal-reach-rearing life history. *LHP* = life history pathway, *Lcl* = lower 95% confidence limit and *ucl* = upper 95% confidence limit.")
+
+```
+
+```{r fit_model, message=FALSE, warning=FALSE}
+
+##source functions
+
+setwd(here())
+sapply(list.files(here("src","functions")),
+       FUN=function(x){source(paste0("src/functions/",x))})
+##load and process data
+input<-make_data()
+dat_IPM<-input$dat_IPM
+##initialize TMB model and find maximum likelihood estimate of parameters (takes ~10 minutes)
+obj<-initialize_model()
+rm(input)
+## conduct population projection simulations (can take ~30 minutes)
+# sim_list<-pop_projection()
+```
+
+
+```{r}
+# here::i_am("src/Wen_spchk_IPM.cpp")
+# dat_IPM<-mod$env$data
+obj$mod$env$data$proj_years<-0
+
+  setwd(here("src"))
+  TMB::compile("Wen_spchk_IPM.cpp")
+  dyn.load(dynlib("Wen_spchk_IPM"))
+  
+report<-obj$mod$report(obj$mod$env$last.par.best)
+  sd_rep<-obj$fit$SD
+
+here::i_am("src/Wen_spchk_IPM.cpp")
+  setwd(here("Wenatchee-survival"))
+  here::i_am("src/Wen_MSCJS_re_4_cont_cov.r")
+source(here("src","mscjs_wen_helper_funcs.R"))
+  source(here("src/Wen_MSCJS_re_4.R"))
+  mscjs_dat<- make_dat(mark_file_CH,sites=c( "LWe_J",
+                                             "McN_J",
+                                             #"JDD_J",
+                                             "Bon_J",
+                                             #"Est_J",
+                                             "Bon_A","McN_A",
+                                             #"PRa_A","RIs_A",
+                                             "Tum_A"),cont_cov=c(),length_bin = 5,doy_bin = 10,inc_unk = FALSE,exc_unk=TRUE,start_year = 1998,end_year = 2018)
+
+mscjs_fit<-list(fit=obj$fit,mod=obj$mod,last_par_best=obj$mod$env$last.par.best)
+
+
+
+Phi.design.dat2 <- mscjs_dat$Phi.design.dat%>% select(sea_Year_p:mig_year,age_class) %>%
+
+  bind_rows(filter(.,LH=="summer"&time==1) %>% mutate(LH="fry")) %>% # %>% left_join(x=juv_mat2 %>% mutate(sea_Year_p=as.factor(BY+2)),y=.)
+
+
+
+
+  mutate(
+  eta_phi= sd_rep$value[names(sd_rep$value)=="eta_phi"][1:nrow(.)],
+  eta_phi_sd=sd_rep$sd[names(sd_rep$value)=="eta_phi"][1:nrow(.)],
+  phi_fit=  report$phi[1:nrow(.)] ,# ,#plogis(eta_phi),
+  lcl_phi=plogis(qnorm(.025,eta_phi,eta_phi_sd)),
+  ucl_phi=plogis(qnorm(.975,eta_phi,eta_phi_sd))) %>%
+  mutate(  LH=case_when(LH=="summer"~"Sum.0",
+                        LH=="fall"~"Fal.0",
+                        LH=="smolt"~"Spr.1",
+                        LH=="fry"~"Spr.0",
+                        TRUE~LH),
+           LH=fct_relevel(LH,"Spr.0","Sum.0","Fal.0","Spr.1"#,"Hatch"
+                          ), 
+           stratum=as.character(as.numeric(stratum)+2)) %>% 
+  # mutate(age_class=ifelse(age_class=="smolt","Spr.1","DSR"))%>% 
+  mutate(age_class=case_when(age_class=="smolt"~"Spr.1",#,
+      #                       age_class=="Hatch"~"Hatch",
+                             TRUE~"DSR"))%>% 
+  # group_by(LH,mig_year,stream,time) %>%
+  # mutate(cohort_freq=sum(freq)) %>% 
+  # mutate(across(phi_fit:ucl_phi,~sum(.*freq/cohort_freq))) %>% 
+  filter(!(time=="1"&LH=="Unk"))#%>% 
+# summarize(sum(length_bin*freq/cohort_freq))
+
+
+
+
+Psi.design.dat<-mscjs_dat$Psi.design.dat %>% filter(tostratum==2) %>% select(LH,mig_year,age_class) %>% cbind(report$psi[1:nrow(.),]) %>% #filter(LH!="summer",McN_J==0,stream!="LWE") %>%
+  pivot_longer(`1`:`3`,names_to="years",values_to="prop") %>% distinct() %>%  
+  mutate(
+    LH=case_when(LH=="summer"~"Sum.0",
+                 LH=="fall"~"Fal.0",
+                 LH=="smolt"~"Spr.1"),
+    LH=fct_relevel(LH,"Sum.0","Fal.0","Spr.1"), 
+    years=as.character(as.numeric(years)+2)) %>% 
+  mutate(age_class=ifelse(age_class=="yrlng","Spr.1","DSR"))
+
+
+
+##samples form posterio
+full_post<-rmvnorm_prec(mu=mscjs_fit$last_par_best,
+                            prec=mscjs_fit$fit$SD$jointPrecision, 10000, random_seed=1 )
+
+
+## function to go from multinomial logit space to simplex (for conditional return ages)
+to_simplex<-function(x){
+  thing1<-x[which(names(mscjs_fit$last_par_best)%in%c("beta_psi_ints","beta_psi_pen"))]
+   b1<-thing1[1:2]+thing1[3:4]
+  b2<-thing1[1:2]-thing1[3:4]
+  
+  ret1<-exp(c(b1[1],0,b1[2]))/(1+sum(exp(b1)))
+  ret2<-exp(c(b2[1],0,b2[2]))/(1+sum(exp(b2)))
+  return(c(ret1,ret2))
+}
+
+##posterior samples of median return age proportions by juvenile emigration age
+psi_post_samps<-apply(full_post,2,to_simplex)
+
+#table of mean and confidence intervals for psi's
+psi_tab<-Psi.design.dat %>% select(age_class,years) %>% distinct %>% 
+  mutate(mean=apply(psi_post_samps,1,mean),
+         median=to_simplex(mscjs_fit$last_par_best)) %>% 
+  cbind(apply(psi_post_samps,1,quantile,probs=c(.025,.975)) %>% t()) %>% 
+  as_tibble
+ ##-----------------------------------------
+ ##-----------------------------------------
+
+
+#----------------------------------------------------------
+#----------------------------------------------------------
+#----------------------------------------------------------
+# build a table of expected values of phi and 95% confidence intervals, on average across years
+
+##indices of posterior samples for phi params
+ind_phi<-which(names(mscjs_fit$last_par_best)%in%c("beta_phi_ints","beta_phi_pen"))
+###subset posterior samples for phi parameters
+sim_posterior_phi<-full_post[ind_phi,]
+
+###design matrix fo phi with all continuous covariates set to 0
+design_phi<- mscjs_fit$mod$env$data$X_phi %>% as.matrix%>% as_tibble() %>% 
+  mutate(across(c("time1:win_air:LHfall":"time1:win_air:LHsummer", "time4:age_classsmolt:ersstWAcoast.sum":last_col()),function(x)x=0))
+
+
+## calculate 95% confidence limits
+post_surv_CI<- t(sim_posterior_phi) %*% t(design_phi) %>% #linear predictor for survival in each year, stream, LHP, Age, interval and posterior samples
+  ### calculate 95% confidence limits 
+  apply(2,quantile,probs=c(.025,.975)) %>% 
+  t() %>% `colnames<-`(c("lcl","ucl"))
+
+
+##calculate expected values of survival 
+phi_tab<- mscjs_dat$Phi.design.dat %>% as_tibble() %>% select(time,LH,stream,stratum) %>% cbind(med=t(plogis((mscjs_fit$last_par_best[ind_phi] %*% t(design_phi)))))%>%  
+  cbind(post_surv_CI %>% plogis()) %>% 
+  
+    ### renaming of LHPs for consistency and grouping of DSR after tie 1
+  mutate(LH=case_when(as.numeric(time)>4 ~ "All",
+                       (as.numeric(time)>1 & LH!="smolt")~"DSR",
+                      LH=="smolt"~"Spr.1",
+                      LH=="fall"~"Fal.0",
+                      LH=="summer"~"Sum.0",
+                      TRUE~as.character(LH)),
+            LH= fct_relevel(LH,"Sum.0","Fal.0","DSR","Spr.1"),#to make sure they show up in the right order in table
+         ### makes stratum correspond with age
+         stratum=case_when(as.numeric(time)<4~"2",  # age 2 smolts
+                           time=="4"~"-",           # no age for SAR
+                           as.numeric(time)>4~as.character(as.numeric(stratum)+2)), #age of return
+         stream=ifelse(as.numeric(time)>4,"All",stream))%>%  #phi same across streams after time 4
+  rename(Age=stratum) %>% #renames stratum as age
+  
+  
+  group_by(time,LH,stream,Age)  %>%  #taking average survival across years: group by all relevant factors other than years
+  summarise_all(mean)%>% 
+  mutate(stream=case_when(stream==1~"Chiwawa",
+                          stream==2~"Nason",
+                          stream==3~"White",
+                          TRUE~stream))
+  
+
+
+```
+
+\newpage
+
+`r sup_tab_nums("RE")`
+
+Occasion/interval|Variables|
+|--|---------|
+|$\boldsymbol\phi$|
+|1-Natal emigration|LHP + Stream + LHP\*Stream + DS\*Win.air|
+|2-Lower Wenatchee|NR.DS  + Stream + NR.DS\*Stream|
+|3-McNary.juv|NR.DS + Stream + NR.DS\*Stream |
+|4-Bonneville.juv|NR.DS + Stream + NR.DS\*Stream + NR.DS\*CUI.Spr + NR.DS\*SST.WA.Sum|
+|5-Bonneville.ad|Ad.age |
+|6-McNary.ad|Ad.age |
+|$\boldsymbol{\psi}$|
+|4-Bonneville| NR.DS |
+|$\boldsymbol{p}$|
+|2-Lower Wenatchee| LHP + Stream + LHP\*Stream |
+|3-McNary.juv|NR.DS + Stream + NR.DS\*Stream + NR.DS\*Flow + NR.DS\*Spill|
+|4-Bonneville.juv|NR.DS + Stream + NR.DS\*Stream + NR.DS\*Flow + NR.DS\*Spill|
+|5-Bonneville.ad|Ad.age |
+|6-McNary.ad|Ad.age |
+|7-Tumwater.ad|- |
+
+# Figures {-}
+
+
+
+\newpage
+
+
+
+```{r plot_surv_1, fig.height=8, fig.width=8, message=FALSE, warning=FALSE,eval=TRUE,echo=FALSE}  
+library(viridis)
+ggplot(data= as_tibble(Phi.design.dat2) %>% filter(Time==0),aes(x=(mig_year) ,y=phi_fit,color=stream)) +scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+geom_linerange(aes(ymin=lcl_phi,ymax=ucl_phi),position=position_dodge(width = .75))+facet_wrap(~LH,ncol=2)+ylim(0,1)+xlab("Year")+ylab("Survival") + geom_point(position=position_dodge(width = .75))+ scale_color_viridis(option="B",discrete=T,end=.7)+labs(color = "Natal stream")+theme(legend.position="top")
+
+
+```
+
+`r fig_nums("time_1_surv")`
+
+\newpage
+
+```{r plot_output2, fig.height=9.5, fig.width=8, message=FALSE, warning=FALSE,eval=TRUE}  
+#downstream
+
+ ggplot(data= as_tibble(Phi.design.dat2) %>% filter(Time==1|Time==2|Time==3) %>% mutate(age_class=ifelse(age_class=="Spr.1","Natal-reach rearing","Downstream rearing")),aes(x=(mig_year) ,y=phi_fit,color=stream)) +scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+geom_linerange(aes(ymin=lcl_phi,ymax=ucl_phi),position=position_dodge(width = .75))+facet_grid(rows=vars(time),cols=vars(age_class),labeller =  labeller(time=c(`1`="Release to Lower Wenatchee",`2`="Lower Wenatchee to McNary", `3` = "McNary to Bonneville ",`4`="Bonneville to Bonneville")),scales = "free")+xlab("Year")+ylab("Survival") + geom_point(position=position_dodge(width = .75))+ scale_color_viridis(option="B",discrete=T,end=.7)+labs(color = "Natal stream")+theme(legend.position="top",panel.spacing = unit(.75, "lines"))
+
+```
+
+`r fig_nums("time_2_4_surv")`
+
+
+
+\newpage
+
+```{r plot_output4, fig.height=4.5, fig.width=6, message=FALSE, warning=FALSE,eval=TRUE }  
+# return age proportions
+# dev.new()
+ggplot(data= as_tibble(Psi.design.dat) %>% mutate(age_class=ifelse(age_class=="Spr.1","Spr.1","DSR")) %>% mutate(age_class=ifelse(age_class=="Spr.1","Natal-reach rearing","Downstream rearing")), aes(fill=years ,x = mig_year, y =prop)) + geom_bar(stat="identity", width=1,position="fill")+labs(fill = "Adult age") + ylab("Proportion")+xlab("Ocean-entry year") +facet_grid(~ age_class)+ scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+ scale_fill_viridis(option="D",discrete=T,end=.7)+theme(legend.position="top")
+ # ggsave(filename = here("AFS 2021","age.png"),device="png",units="in")
+```
+
+`r fig_nums("adult_props")`
+
+
+\newpage
+
+```{r env_cov_plot, fig.height=5, fig.width=8, message=FALSE, warning=FALSE,eval=TRUE }
+env_cov_tab_func(covs=c(
+  "time1:win_air:LHfall"                  ,
+  "time1:win_air:LHsummer"                ,
+  "time4:age_classsmolt:ersstWAcoast.sum" ,      
+  "time4:age_classsub:ersstWAcoast.sum"   ,      
+  "time4:age_classsmolt:cui.spr"          ,      
+  "time4:age_classsub:cui.spr" 
+
+  ),  obj)
+
+
+```
+
+`r sup_fig_nums("Env_cov")`
+
+
+
+\newpage
+
+```{r plot_output5, fig.height=6.5, fig.width=7, message=FALSE, warning=FALSE,eval=TRUE }  
+
+#upstream survival
+# dev.new()
+ggplot(data= as_tibble(Phi.design.dat2) %>% filter(Time>3),aes(x=(mig_year) ,y=phi_fit,color=stratum)) + geom_point(position=position_dodge(width = .75))+labs(color = "Adult age")+geom_linerange(aes(ymin=lcl_phi,ymax=ucl_phi),position=position_dodge(width = .75)) + facet_grid(rows=vars(time),labeller =  labeller(time=c(`5`="Bonneville to McNary",`6`="McNary to Tumwater ")),scales = "free")+ylim(0,1)+xlab("Year")+ylab("Survival")+ geom_point(position=position_dodge(width = .75)) + scale_x_discrete(guide = guide_axis(check.overlap = TRUE))+ scale_color_viridis(option="D",discrete=T,end=.7)+theme(legend.position="top")
+```
+
+`r sup_fig_nums("time_5_6_surv")`
+
+\newpage
+
+
+\newpage
+
+`r sup_tab_nums("phi_mean")`
+
+```{r phi_means, echo=FALSE,eval=TRUE, message=FALSE, warning=FALSE}
+knitr::kable(phi_tab  , col.names = c("Interval", "LHP","Stream",  "Age" , "Median","lcl","ucl"),escape = FALSE, digits =3)
+
+```
+
+\newpage
+
+`r sup_tab_nums("psi_mean")`
+
+```{r psi_means, echo=FALSE,eval=TRUE, message=FALSE, warning=FALSE}
+knitr::kable(psi_tab %>% select(-mean), col.names = c( "LHP",  "Age", "Median","lcl","ucl"),escape = FALSE, digits =3)
+```
+
