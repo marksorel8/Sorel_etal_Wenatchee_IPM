@@ -29,7 +29,7 @@ make_data<-function(){
   ##   Load data ##
   {
     #read redd data from Hatchery program annual report (Hillman et al 2020)
-    redds<-read_csv(here("data","redd_counts.csv")) %>% pivot_longer(c("Chiwawa","Nason","White"),"stream",values_to="redds") 
+    redds<-read_csv(here("data","redd_counts.csv")) %>% pivot_longer(c("Chiwawa","Nason","White"),names_to="stream",values_to="redds") 
     
     
     ##emigrant abundance estimates (log means and standard deviations from screw trap model). See https://github.com/Quantitative-Conservation-Lab/Wenatchee-screw-traps
@@ -184,9 +184,7 @@ make_data<-function(){
 
                                    time1:win_air:LHfall+
                                    time1:win_air:LHsummer +
-                                   time1:win_flow:LHfall+
-                                   time1:win_flow:LHsummer+
-
+                                  
                                    diag(0+time1+time1:LH|mig_year)+
                                    
                                    ## to McNary
@@ -208,7 +206,6 @@ make_data<-function(){
                                    time4:stream+
                                    time4:age_class:stream+
                                    time4:ersstWAcoast.sum:age_class +
-                                   time4:ersstArc.win:age_class+
                                    time4:cui.spr:age_class +
 
                                    diag(0+time4+time4:age_class|mig_year)+
