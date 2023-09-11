@@ -1,0 +1,319 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-08-27"
+---
+
+```{r include-FALSE, message=FALSE, warning=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r load_packages, message=FALSE, warning=FALSE}
+library(here)
+library(TMB)
+library(TMBhelper)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(forcats)
+library(viridisLite)
+library(readxl)
+```
+
+```{r fit_model, message=FALSE, warning=FALSE}
+
+##source functions
+
+setwd(here())
+sapply(list.files(here("src","functions")),
+       FUN=function(x){source(paste0("src/functions/",x))})
+##load and process data
+input<-make_data()
+dat_IPM<-input$dat_IPM
+##initialize TMB model and find maximum likelihood estimate of parameters (takes ~10 minutes)
+obj<-initialize_model()
+rm(input)
+
+## conduct population projection simulations (can take ~30 minutes)
+# sim_list<-pop_projection()
+
+obj$mod$env$data$proj_years<-0
+
+  setwd(here("src"))
+  TMB::compile("Wen_spchk_IPM.cpp")
+  dyn.load(dynlib("Wen_spchk_IPM"))
+  
+mod_rep<-obj$mod$report(obj$mod$env$last.par.best)
+mod_fit<-obj$fit
+mod_dat<-dat_IPM
+
+
+```
+
+
+
+```{r }
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Function to  plot latent spawners vs juveniles with functional relationship and process error envelope
+# returns a ggplot
+#----------------------------------------------------------------------------------------
+ggplot_spawner_juveniles<-function(mod_fit , mod_dat, mod_rep){
+
+  #tibble of estimated spawner and emigrant abundances
+  sum_out<- tibble(
+    juveniles=log(mod_rep$J_pred[1:length(mod_dat$s_i)]),
+    # juveniles_sd=mod_fit$SD$sd[names(mod_fit$SD$value)=="log(J_pred)"],
+    stream=  mod_dat$s_i,
+    LH= mod_dat$l_i,
+    t=mod_dat$t_i,
+    # S_fac=mod_dat$st_i[1:length(mod_dat$s_i)]
+    ) %>% 
+    left_join(  
+      tibble(spawners=(c(mod_rep$S_eff)),
+             S_obs=c(dat_IPM$log_S_obs),
+              t=rep(seq(min(dat_IPM$t_i),max(dat_IPM$t_i)+3),times=3),
+              stream=rep(unique(dat_IPM$s_i),each=length(unique(dat_IPM$t_i))+3)) %>% 
+  mutate(spawners=ifelse(spawners>800,0,spawners))
+    ) %>% drop_na() %>% 
+    left_join(
+  tibble(stream=unique(dat_IPM$s_i),stream_length=dat_IPM$stream_length)) %>% mutate(spawners=log(spawners/stream_length)) %>% 
+    mutate(stream=c("Chiwawa","Nason","White")[stream+1],
+           stream=fct_relevel(stream,c("Chiwawa","Nason","White")),
+           LH=c("Spr-0","Sum-0","Fall-0","Spr-1")[LH+1],
+           LH=fct_relevel(LH,c("Spr-0","Sum-0","Fall-0","Spr-1")))
+
+      
+      
+      
+      
+    #   tibble(
+    #     spawners=mod_rep$,
+    #     # spawner_sd=mod_fit$SD$sd[names(mod_fit$SD$value)=="log_S_hat"],
+    #     S_fac=mod_dat$st_i %>% levels())) %>% 
+    
+  
+  #tibble of model prediction of emigrant abundances over a range of spawner abundances
+  preds<-tibble(
+    alpha=mod_rep$alpha,
+    gamma=mod_rep$gamma,
+    Jmax=mod_rep$Jmax,
+    stream=rep(0:2,each=4),
+    LH=rep(0:3,times=3),
+    loadings=(mod_rep$Loadings_pf[1])^2,
+    idio_var=mod_rep$sigma_eta^2) %>% 
+    mutate(eps=sqrt(loadings+idio_var)) %>% 
+    mutate(stream=c("Chiwawa","Nason","White")[stream+1],
+           stream=fct_relevel(stream,c("Chiwawa","Nason","White")),
+           LH=c("Spr-0","Sum-0","Fall-0","Spr-1")[LH+1],
+           LH=fct_relevel(LH,c("Spr-0","Sum-0","Fall-0","Spr-1")))%>%
+    left_join(
+      sum_out %>% group_by(stream) %>% summarize (S_max=max(exp(spawners)))) %>% 
+    crossing(
+      spawners=seq(from=0,to=max(exp(sum_out$spawners)),by=.1)) %>% 
+    filter(spawners<=S_max) %>% 
+    mutate(juveniles=((alpha*(spawners)^(gamma)/
+                         (1+alpha*(spawners)^(gamma)/Jmax))))
+  
+  
+  
+  
+  #Begin plot of spawners vs juveniles 
+  scale_juv<-100
+  #facet_wrap plot
+  SR_plot<-ggplot(data=preds,aes(x= spawners,y=juveniles/scale_juv))+facet_wrap(~LH+stream,scales = "free",nrow=4) + geom_ribbon(aes(ymin=juveniles*exp(-1.96*eps)/scale_juv,
+                                                                                                                                     ymax=juveniles*exp(1.96*eps)/scale_juv,fill=rgb(.7,.1,.1,.2)),show.legend = FALSE)+
+    geom_line(color="firebrick3",size=1.25)+
+    geom_point(data=sum_out,aes(x=exp(spawners),y=exp(juveniles )/scale_juv))+ 
+    # geom_linerange(data=sum_out,aes(x=exp(spawners),y=exp(juveniles )/scale_juv,ymin=exp(qnorm(.025,juveniles ,juveniles_sd ))/scale_juv,ymax=exp(qnorm(.975,juveniles ,juveniles_sd ))/scale_juv))+
+    # geom_linerange(data=sum_out,aes(x=exp(spawners),y=exp(juveniles )/scale_juv,xmin=exp(qnorm(.025,spawners,spawner_sd)),xmax=exp(qnorm(.975,spawners,spawner_sd)))) + 
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_blank(),
+      plot.margin = margin(25.5, 50, 5.5, 5.5, "pt"),
+      panel.spacing.y=unit(-.25,"cm"),
+      legend.box.spacing=unit(1.5,"cm"))+
+    xlab("Spawners")+ylab("Emigrants x100")+
+    scale_fill_manual(values=c(rgb(.7,.1,.1,.2),rgb(.7,.1,.1,.3)),labels=c("Idiosyncratic"," Correlated"),name="Prediction interval")+guides(fill = guide_legend(override.aes= list(alpha = c(0.2,.3))))
+  
+  
+  #grid_wrap plot to get facet labels grobs from
+  p_grid<-ggplot(data=preds,aes(x= spawners,y=juveniles))+facet_grid(LH~stream,scales = "free")+geom_ribbon(aes(ymin=juveniles*exp(-1.96*eps),
+                                                                                                                ymax=juveniles*exp(1.96*eps)),fill=rgb(.7,.1,.1,.2)) + 
+    theme(
+      plot.margin = margin(2, 2, 2, 2, "cm")
+    ) 
+  
+  
+  # function to selectively remove certain grobs
+  gtable_filter_remove <- function (x, name, trim = TRUE){
+    matches <- !(x$layout$name %in% name)
+    x$layout <- x$layout[matches, , drop = FALSE]
+    x$grobs <- x$grobs[matches]
+    if (trim) 
+      x <- gtable_trim(x)
+    x
+  }
+  
+  #convert facet_wrap plot to Grob list
+  p_grid_tab<-ggplotGrob(p_grid)
+  #convert facet_grid plot to Grob list
+  SR_plot_tab<-ggplotGrob(SR_plot)
+  
+  # remove bottom axes from all but smolt facets
+  SR_plot_filtered<-gtable_filter_remove(SR_plot_tab,
+                                         name = c(paste0("axis-b-",rep(1:3,each=3) ,"-", 1:3),
+                                                  paste0("strip-t-",rep(1:3,each=3) ,"-", 2:4)),
+                                         trim = FALSE)
+  
+  #add facet labels for columns (Stream)
+  SR_plot_filtered<-gtable::gtable_add_grob(SR_plot_filtered, p_grid_tab$grobs[grep('strip-t', p_grid_tab$layout$name)],t=rep(1,3), l= c(5,9,13))
+  
+  #add facet labels for rows (LHs)
+  SR_plot_filtered<-gtable::gtable_add_grob(SR_plot_filtered, p_grid_tab$grobs[grep('strip-r', p_grid_tab$layout$name)],t=c(8,13,18,23),l=rep(17,4) )
+  
+  #adjust placement of facet labels
+  SR_plot_filtered$heights[7]<-unit(-2,"pt")
+  SR_plot_filtered$widths[15]<-unit(-.45,"cm")
+  
+  #render plots
+  grid::grid.newpage()
+  grid::grid.draw(SR_plot_filtered)
+
+return(list(sum_out=sum_out,preds=preds))
+}
+
+
+```
+
+```{r}
+
+#----------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------
+#Functon to plot expected emigrants vs. spawners
+#----------------------------------------------------------------------------------------
+
+
+expec_spawn_em_ploft_func<-function(preds){
+##expected emigrants vs. spawners
+
+pred_mat<-preds %>%  mutate(juveniles =juveniles /100,LH=fct_relevel(LH,"Spr-0","Sum-0","Fall-0","Spr-1")) %>% group_by(stream,spawners) %>%  mutate(prop=juveniles/sum(juveniles)) %>% pivot_longer(c(juveniles,prop)) %>% mutate(name=as_factor(name),name= fct_relevel(name,c("prop","juveniles")))
+  
+library(viridis)
+juvenile_plot<-ggplot(data=pred_mat,
+                      aes(x=spawners/10,y=value,fill=LH))+geom_bar(stat="identity",width=.02)+facet_grid(name~stream, scales="free",switch="y", space="free_x", labeller = labeller(name=function(x){c( "Proportion","Emigrants x100/ km")}))+ scale_fill_discrete( name="Life Stage")+ theme_grey()+  ylab(NULL) + labs(x="Spawners (x10/ km)")+
+  theme(strip.background = element_blank(),
+        strip.placement = "outside")+ scale_fill_viridis(option="B",discrete=TRUE,end=.9,begin=.225)+
+  scale_x_continuous(guide = guide_axis(check.overlap = TRUE))
+
+juvenile_plot
+}
+
+```
+
+
+```{r}
+
+#function for simulation from a multivariate normal, taken fron J. Thorson's Fish Utils. Package
+rmvnorm_prec <- function(mu, prec, n.sims, random_seed ) {
+  set.seed( random_seed )
+  z = matrix(rnorm(length(mu) * n.sims), ncol=n.sims)
+  L = Matrix::Cholesky(prec, super=TRUE)
+  z = Matrix::solve(L, z, system = "Lt") ## z = Lt^-1 %*% z
+  z = Matrix::solve(L, z, system = "Pt") ## z = Pt    %*% z
+  z = as.matrix(z)
+  return(mu + z)
+}
+#parametric bootstrap from posterior of fitted model
+  sim_post<-rmvnorm_prec(obj$mod$env$last.par.best, 
+               mod_fit$SD$jointPrecision, 10000, 623 )
+  ##calculate and store functional form parameters (alpha, gamma, Jmax) for each posterior samples
+  FFparams<-array(dim=c(12,10000,3))
+  for (i in 1:10000){
+    out<-obj$mod$report(par=sim_post[,i])
+    FFparams[,i,1]<-out$alpha
+    FFparams[,i,2]<-out$gamma
+    FFparams[,i,3]<-out$Jmax
+  }
+  ##calculate quantiles of FF parameters 
+  quant_FF<-apply(FFparams,c(1,3),quantile,probs=c(0.025,.5,0.975))
+  
+ ## table of  functional relationship fit parameters
+   FF_params<- tibble(stream=rep(c("Chiwawa","Nason","White"),each=4),
+  LH=factor(rep(c("Spr-0","Sum-0","Fall-0", "Spr-1"),times=3),levels=c("Spr-0","Sum-0","Fall-0", "Spr-1")),           #alpha parameters
+  alpha=report$alpha, #mean
+  alpha_lcl=quant_FF[1,,1], #lower 95% confidence limit
+  alpha_ucl=quant_FF[3,,1], #upper 95% confidence limie
+  #gamma
+  gamma=report$gamma,
+  gamma_lcl=quant_FF[1,,2],
+  gamma_ucl=quant_FF[3,,2],
+  #Jmax
+  Jmax=report$Jmax,
+  Jmax_lcl=quant_FF[1,,3],
+  Jmax_ucl=quant_FF[3,,3],) %>% 
+
+    arrange(LH,stream) %>% 
+    mutate(across(3:11,round,2))
+  
+  View(FF_params) # View table
+
+ write.csv(FF_params,here("results","FF_params.csv"))
+
+```
+ 
+
+```{r}
+
+#function to bootstrap and plot environmental covariates coefficient values
+## returns a ggplot
+#----------------------------------------------------------------------------------------
+
+bootstrap_env_cov<-function(sim_post=sim_post ,n_sim=50000){
+  
+  # test_sim<-mvtnorm::rmvnorm(n_sim,last_best ,
+                             # precis )
+  
+  row_beta_e<-which(names(mod$env$last.par.best)=="beta_e")[1:8]
+  
+  out<-cbind(LH=c("Spr-0","Sum-0","Fall-0","Spr-1","Sum-0","Fall-0","Spr-1"),
+             season=c(rep("Winter 1 max discharge",4),rep("Summer 1 mean discharge",3),"Winter 2\n max disch."),(sim_post[row_beta_e,])) %>% as_tibble() %>%  pivot_longer(!c(LH,season),names_to=NULL,values_to="value") %>% mutate(value=as.numeric(value)) %>% mutate(LH=fct_relevel(LH,"Spr-0","Sum-0","Fall-0","Spr-1"),season=fct_relevel(season,"Winter 1 max discharge","Summer 1 mean discharge" ,"Winter 2\n max disch."))
+  
+  out<-ggplot(data=out,aes(x=LH,y=value)) + facet_grid(~season,scale="free_x", space = "free_x")+ geom_hline(yintercept=0,linetype=2)+geom_violin(fill="black")+ xlab("Life History") +ylab("Coefficient value")
+  
+  return(out)
+}
+
+```
+
+
+```{r}
+  # plot of latent and expected juveniles vs spawners 
+  ##png(file=here("results","plots","spawn_em_11112021.png"),units="in",height=5,width=6.5,res=300)
+  spawn_em<-ggplot_spawner_juveniles(mod_fit = mod_fit,mod_dat=mod_dat ,mod_rep=mod_rep)
+  ##dev.off()
+
+##expected emigrants vs. spawners
+# png(here("results","plots","juv_LH.png"),units="in",res=300,height=4,width=5)
+   expec_spawn_em_ploft_func(preds=spawn_em$preds)
+  # dev.off()
+  # ggsave(here("results","plots","juv_LH.png"))
+   
+   
+   # plot environmental covariate coefficients
+# png(here("results","plots","coef_plot_all.png"),units="in",res=300,height=4,width=5)
+bootstrap_env_cov(sim_post)
+# dev.off()  
+
+```
+
+## plot prior and posterior samples of relative reproductive success
+```{r}
+test<-tibble(pRRS=plogis(c(sim_post[227,],(rnorm(10000,qlogis(.53),1)))),type=rep(c("posterior","prior"),each=10000))
+
+
+ggplot(test,aes(x=pRRS,fill=type))+geom_density(alpha=.7,bounds=c(0,1),adjust=1.5)
+```
