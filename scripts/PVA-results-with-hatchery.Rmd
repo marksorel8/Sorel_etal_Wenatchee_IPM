@@ -23,7 +23,6 @@ library(stringr)
 library(forcats)
 library(viridisLite)
 library(readxl)
-
 ```
 
 
@@ -39,30 +38,99 @@ input<-make_data()
 dat_IPM<-input$dat_IPM
 ##initialize TMB model and find maximum likelihood estimate of parameters (takes ~10 minutes)
 obj<-initialize_model()
+
 ## conduct population projection simulations (can take ~30 minutes)
 sim_list<-pop_projection()
+
+
+
 ```
+
+```{r, fig.height=7, fig.width=7}
+
+ # here::i_am("src/Wen_spchk_IPM.cpp")
+# dat_IPM<-mod$env$data
+obj$mod$env$data$proj_years<-0
+
+  setwd(here("src"))
+  TMB::compile("Wen_spchk_IPM.cpp")
+  dyn.load(dynlib("Wen_spchk_IPM"))
+  
+report<-obj$mod$report()
+
+
+s_hat<-report$S_hat
+s_hat[is.na(dat_IPM$log_S_obs )]<-NA
+plot(y=s_hat,
+x=dat_IPM$log_S_obs %>% exp(),
+ylab="Posterior mean female spawner estimate",
+xlab="Observed redds")
+abline(0,1)
+
+
+plot(y=report$J_pred[1:length(dat_IPM$J_obs)],
+x=dat_IPM$J_obs %>% exp(),
+ylab="Posterior juvenile abundance mean",
+xlab="Prior juvenile abundance mean ")
+abline(0,1)
+
+plot(y=report$pHOS,
+     x=((dat_IPM$H_carc)/(dat_IPM$WH_carc)),
+     ylab="Posterior mean pHOS",
+xlab="Observed proportion of hatchery origin carcasses") 
+abline(0,1)
+
+
+plot(y=report$p_female,
+     x=plogis(dat_IPM$logit_p_fem_obs),
+     ylab="Posterior mean proportion female",
+xlab="Observed proportion female at Tumwater Dam") 
+abline(0,1)
+
+```
+
 
 ```{r load_sim,cache=TRUE, cache.extra = file.mtime(here("results","sim_list.Rdata"))}
 #unpack the needed simulation items from the list that they are saved in
 sim_pars_array<-sim_list$sim_pars_array  #derived paramaters from posterior samples
-sim_out<-sim_list$sim_out                 # spawners        
+sim_out<-sim_list$sim_out                 # female spawners (wild + hatchery)        
 A_tum<-sim_list$A_tum                     # adults at Tumwater
 sim_p_female<-sim_list$sim_p_female       # proportion female
 sim_pHOS<-sim_list$sim_pHOS               # proportion hatchery origiin spawners
-sim_S_wild<-sim_out*(1-sim_pHOS)          # wild spawners
+sim_S_wild<-sim_out*(1-sim_pHOS)          # wild female spawners
 sim_NOB<-sim_list$sim_NOB                 # natural origin broodstock
 dat_IPM$proj_years<-50                    # number of projections years
-BS_Max<-dat_IPM$BS_Max                 # broodstock sizes
+BS_Max<-dat_IPM$BS_Max                    # broodstock sizes
 rm(sim_list)
 gc()
+
+sim_S_H<-sim_out*(sim_pHOS)  
+
+
+#years of future simulations (excluding retrospective)
+sim_sum_yrs<-(dat_IPM$last_t+1-3):(dat_IPM$last_t+dat_IPM$proj_years-3)
+sim_sum_yrs_actual<-(sim_sum_yrs+1995+3) %>% range %>% paste(collapse=" -- ")
+# HOS_ave<-(sim_S_H %>% apply(c(1,3),sum))[sim_sum_yrs,]
+# HOS_ave %>% apply(2,mean) %>% quantile(c(.05,.5,.95))
+# 
+# test<-sim_NOB %>% apply(c(1,3),sum) %>%`-`(sum(BS_Max)) %>% `*`(-1) %>% apply(2,mean,na.rm=T)
+
 ```
 
 
 ```{r LH_abund_plot,fig.height=9,cache=TRUE, cache.extra = file.mtime(here("results","sim_list_2_19.Rdata"))}
 
+# female returns
+# A_tum_f<-array(NA, dim=dim(A_tum))
+# for( a in 1:3){
+#   for(l in 1:4){
+#     
+#     yrs<-((1+a+2):(74))
+#     A_tum_f[(1:length(yrs)),,l,a,]<-A_tum[1:length(yrs),,l,a,]*sim_p_female[yrs,,]
+#   }
+# }
 
-#adults returning to tumwater by brood year
+#dataframe of posterior median adult returns by life history and natal stream
 Tum_ad_med<-apply(A_tum,1:4,median)
 ar_med_long<-tibble(Emigrants=c(Tum_ad_med),
                         year=rep(seq(from=1996,length.out=dim(Tum_ad_med)[1]),times=prod(dim(Tum_ad_med)[2:4])),
@@ -71,55 +139,16 @@ ar_med_long<-tibble(Emigrants=c(Tum_ad_med),
                         age=rep(3:5,each=prod(dim(Tum_ad_med)[1:3]))
 )%>%
   mutate(LH=fct_relevel(LH,c("Spr.0","Sum.0","Fal.0","Spr.1"))) %>%
-  filter(age!=3) %>%
-  group_by(year,stream,LH) %>% summarise(A_tum_4_5=sum(Emigrants),.groups = "keep") %>% ungroup() %>% 
-  filter(year<max(year))
+  # filter(age!=3) %>%
+  mutate(return_year=year+age) %>% 
+  group_by(return_year,stream,LH) %>% 
+  filter(n()==3)%>% 
+  summarise(adults=sum(Emigrants),.groups = "keep") %>% ungroup() %>% 
+  filter(return_year<max(return_year))
 
-rm(Tum_ad_med)
-
-Tum_adult_broodYear_plot<-ggplot(data=ar_med_long,
-       aes(fill=LH, x=year, y=A_tum_4_5))+ geom_bar(stat="identity", width=.8)+facet_wrap(~stream,scales="free_y",ncol=1)+xlab("Juvenile brood_year")
-
-
-rm(ar_med_long)
-
-
-
-#adults returning to tumwater by *return* year
-
-## multiply returning adults by proportion of females 
-A_tum_f<-array(NA,dim=dim(A_tum))
-for ( i in 1:dim(A_tum)[5]){      # simulations
-  for ( a in 1:3){                # ages      
-    for ( l in 1:dim(A_tum)[3]){  # LHPs
-    A_tum_f[a:((dim(A_tum)[1])),,l,a,i]<-
-      A_tum[1:((dim(A_tum)[1])-(a-1)),,l,a,i]*
-      sim_p_female[(3+a):(dim(sim_p_female)[1]),,i] # proportion female
-
-    
-    }
-  }
-}
-
-
-
-# sum across adult return ages
-Tum_ad<-apply(A_tum_f,c(1:3,5),sum)
-#take median across simulations
-Tum_ad_med<-apply(Tum_ad,1:3,median)
-
-
-#dataframe of posterior median adult returns by life history and natal stream
-ar_med_long<-data.frame(adults=c(Tum_ad_med),year=seq(from=1996+3,length.out=dim(A_tum_f)[1]),
-                        stream=rep(c("Chiwawa","Nason","White"),each=dim(Tum_ad_med)[1]),
-                        LH=rep(c("Spring age 0","Summer age 0","Fall age 0","Spring age 1"),each=prod(dim(Tum_ad_med)[1:2]))) %>%
-  as_tibble()%>% 
-  mutate(LH=fct_relevel(LH,c("Spring age 0","Summer age 0","Fall age 0","Spring age 1"))) %>% pivot_wider(names_from=stream,values_from = adults) %>% mutate(Total=Chiwawa+Nason+White) %>% pivot_longer(cols=(Chiwawa:Total),names_to = "stream",values_to = "adults") %>% 
-  mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")))
-
-#plot
+#plot adults by LHP and year
 Tum_adult_returnYear<-ggplot(data=ar_med_long,
-aes(fill=LH, x=year, y=adults))+ geom_bar(stat="identity", width=.8)+scale_fill_manual(values=rev(RColorBrewer::brewer.pal(n = 4, name = "Dark2")))+facet_wrap(~stream,scales="free_y",ncol=1)+xlab("Spawn year")+ylab("Natural-origin return")+geom_vline(xintercept=2019.45,lty=2)+theme(legend.title=element_blank())
+aes(fill=LH, x=return_year, y=adults))+ geom_bar(stat="identity", width=.8)+scale_fill_manual(values=rev(RColorBrewer::brewer.pal(n = 4, name = "Dark2")))+facet_wrap(~stream,scales="free_y",ncol=1)+xlab("Spawn year")+ylab("Natural-origin return")+geom_vline(xintercept=2019.45,lty=2)+theme(legend.title=element_blank())
 
 rm(ar_med_long)
 gc()
@@ -128,22 +157,23 @@ gc()
 
 ```{r synchrony,cache=TRUE, cache.extra = file.mtime(here("results","sim_list.Rdata"))}
 #years of future simulations (excluding retrospective)
-sim_sum_yrs<-(dat_IPM$last_t+1-3):(dat_IPM$last_t+dat_IPM$proj_years-3)
-sim_sum_yrs_actual<-(sim_sum_yrs+1995+3) %>% range %>% paste(collapse=" -- ")
-
+# sim_sum_yrs<-1:21
+# sim_sum_yrs_actual<-(sim_sum_yrs+1995+3) %>% range %>% paste(collapse=" -- ")
 #mean abundance
-total_tum_ad<-apply(Tum_ad,c(1,3:4),sum,simplify = TRUE) #total acorss streams
+Tum_ad<-apply(A_tum,c(1:3,5),sum,na.rm=T)
 
-Tum_ad_w_tots<-abind::abind(Tum_ad,total_tum_ad,along=2 ) #individual streams with totals
+total_tum_ad<-apply(Tum_ad,c(1,3:4),sum,simplify = TRUE,na.rm=T) #total acorss streams
+
+Tum_ad_w_tots<-abind::abind(Tum_ad,total_tum_ad,along=2) #individual streams with totals
 
 
 mean_abund<-apply(Tum_ad_w_tots[sim_sum_yrs,,,],2:4,function(x){
-  mean(x)
+  mean(x,na.rm=T)
 })
 
 #SD abundance
 sd_abund<-apply(Tum_ad_w_tots[sim_sum_yrs,,,],2:4,function(x){
-  sd(x)
+  sd(x,na.rm=T)
 })
 
 
@@ -166,19 +196,21 @@ for(i in 1:(dim(Tum_ad_w_tots)[4])){
 
 #CV of sum of all LHPs within streams
 #adult female returns by stream and LHP
-Tum_ad_S<-apply(Tum_ad_w_tots,c(1:2,4),sum)
+Tum_ad_S<-apply(Tum_ad_w_tots,c(1:2,4),sum,na.rm=T)
 
 #mean abundance across years 20-50 of projection
 mean_abund_S<-apply(Tum_ad_S[sim_sum_yrs,,],2:3,function(x){
-  mean(x)
+  mean(x,na.rm=T)
 })
 
 #SD abundance across years 20-50
 sd_abund_S<-apply(Tum_ad_S[sim_sum_yrs,,],2:3,function(x){
-  sd(x)
+  sd(x,na.rm=T)
 })
 
 CV_S<-sd_abund_S/mean_abund_S
+
+
 
 #quantiles of CVs by life history and stream
 sum_CV_LS<-matrix(
@@ -198,17 +230,17 @@ Sum_CV_streams_all<-cbind(sum_CV_S_weighted,sum_CV_S)
 CV_Weighted_Wenatchee<-numeric(dim(Tum_ad)[4])
 prop_abund<-numeric(3)
 for(i in 1:dim(Tum_ad)[4]){
-  prop_abund<-mean_abund_S[,i]/sum(mean_abund_S[,i])
+  prop_abund<-mean_abund_S[,i]/sum(mean_abund_S[,i],na.rm=T)
     
- CV_Weighted_Wenatchee[i]<-sum(CV_S[,i]*prop_abund)
+ CV_Weighted_Wenatchee[i]<-sum(CV_S[,i]*prop_abund,na.rm=T)
   }
 
 
 #CV for all Wenatchee
-Tum_ad_Wenatchee<-apply(Tum_ad_S,c(1,3),sum)
+Tum_ad_Wenatchee<-apply(Tum_ad_S,c(1,3),sum,na.rm=T)
 
 CV_Wenatchee<- apply(Tum_ad_Wenatchee[sim_sum_yrs,],2,function(x){
-  sd(x)/mean(x)
+  sd(x,na.rm=T)/mean(x,na.rm=T)
 })
 
 
@@ -260,6 +292,10 @@ individual_LHPs_CV<-everything_CVs_long %>% ggplot( aes(group)) +
  )+facet_wrap(~Stream,ncol=1)+theme(axis.text.x = element_text(angle=90,hjust = 1,vjust=0.5))+ylab("Coefficient of variation")+xlab("")
 
 gc()
+
+#years of future simulations (excluding retrospective)
+sim_sum_yrs<-(dat_IPM$last_t+1-3):(dat_IPM$last_t+dat_IPM$proj_years-3)
+sim_sum_yrs_actual<-(sim_sum_yrs+1995+3) %>% range %>% paste(collapse=" -- ")
 ```
 
 
@@ -281,7 +317,7 @@ ave_props_LH %>% apply(1:2,quantile,probs=c(.05,.25,.5,.75,.95))
 wild_female_spawner_props<-prop_func(Tum_ad_w_tots,FALSE)
 
 
-
+wild_female_spawner_props[3,,]
 
 ```
 
@@ -289,7 +325,7 @@ wild_female_spawner_props<-prop_func(Tum_ad_w_tots,FALSE)
 
 
 ```{r plot_trajectories,fig.height=9,fig.width=8}
-# function to plot simulated future populatin trajectories
+# function to plot simulated future population trajectories
 plot_troj<-function(dat,include_points=TRUE,ylab="Female spawners (Hatchery+Natural)",add_total=TRUE,ylim_max=NA){
 if(add_total){
   dat_new<-dat %>%abind::abind(apply(dat,c(1,3),sum),along=2) #add the toal across streams
@@ -301,6 +337,15 @@ sim_out_sum<-apply(dat_new,# add sum across streams
                   1:2,quantile,probs=c(.05,.25,.5,.75,.95),na.rm=T)
 
 
+# 3 randomly selected trajectories
+set.seed(1234)
+rand_sim<-dat_new[,,sample(1:dim(dat_new)[3],3)]
+  
+
+test<-matrix(rand_sim,ncol=3) %>% `colnames<-`(1:3) %>% as_tibble() %>%  mutate(stream=as.factor(rep(c("Chiwawa","Nason","White","Total")[1:(dim(dat)[2]+add_total)],each=dim(sim_out_sum)[2])),
+    stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")),                                                                                       t=rep((1:dim(sim_out_sum)[2]),times=(dim(dat)[2]+add_total))+1995) %>% filter(!((stream=="Nason"&t<=(dat_IPM$first_t[2]+1995))|(stream%in%c("White","Total")&t<=(dat_IPM$first_t[3]+1995))))
+  
+  
 sim_traj<-matrix(sim_out_sum,nrow=5) %>% t() %>% `colnames<-`(1:5) %>% as_tibble() %>%  mutate(stream=as.factor(rep(c("Chiwawa","Nason","White","Total")[1:(dim(dat)[2]+add_total)],each=dim(sim_out_sum)[2])),
     stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total")),                                                                                       t=rep((1:dim(sim_out_sum)[2]),times=(dim(dat)[2]+add_total))+1995) %>% filter(!((stream=="Nason"&t<=(dat_IPM$first_t[2]+1995))|(stream%in%c("White","Total")&t<=(dat_IPM$first_t[3]+1995))))
 
@@ -308,18 +353,23 @@ if(include_points){
 ggplot(data=sim_traj)+
   geom_ribbon(aes(ymin=`1`,ymax=`5`,x=t),fill=rgb(.5,.5,.5,.5))+
   geom_ribbon(aes(ymin=`2`,ymax=`4`,x=t),fill=rgb(.5,.5,.5,.5))+
-  geom_line(aes(y=`3`,x=t))+
+  geom_line(aes(y=`3`,x=t),lwd=1)+
 geom_point(data=dat_IPM$log_S_obs %>% exp %>% as_tibble %>% mutate(Total=Chiwawa+Nason+White) %>% mutate() %>% pivot_longer(everything()) %>% mutate(t=rep(1:dat_IPM$last_t,each=(dim(dat)[2]+add_total))+1995) %>% rename(stream=name) %>% mutate(stream=fct_relevel(stream,c("Chiwawa","Nason","White","Total"))),aes(x=t,y=value),size=1)+ 
     scale_y_continuous(expand = c(0, 0), limits = c(0, ylim_max)) +
-  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")
+  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")+
+    geom_line(data=test,aes(x=t,y=`1`),color="grey13",lwd=.5)
 }else{
   ggplot(data=sim_traj)+
   geom_ribbon(aes(ymin=`1`,ymax=`5`,x=t),fill=rgb(.5,.5,.5,.5))+
   geom_ribbon(aes(ymin=`2`,ymax=`4`,x=t),fill=rgb(.5,.5,.5,.5))+
-  geom_line(aes(y=`3`,x=t))+
+  geom_line(aes(y=`3`,x=t),lwd=1)+
         scale_y_continuous(expand = c(0, 0), limits = c(0, ylim_max)) +
-  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")+geom_vline(xintercept=2019.5,lty=2)
-}
+  facet_wrap(~stream,scale="free_y",ncol=1)+ylab(ylab)+xlab("Year")+geom_vline(xintercept=2019.5,lty=2)+
+    geom_line(data=test,aes(x=t,y=`1`),color="grey13",lwd=.5)#+
+    # geom_line(data=test,aes(x=t,y=`2`),color="black",lwd=.05)
+    # geom_line(data=test,aes(x=t,y=`3`),color="black",lwd=.05)
+
+  }
 }
 
 
@@ -355,7 +405,7 @@ return(list(geo_mean_all=geo_mean,
 # boxplots all female spawners
 geoMean_all_females_boxplot<-geo_mean_func(sim_out,"Geometric mean 2020-2069")
 
-
+geoMean_all_boxplot<-geo_mean_func(sim_tot,"Geometric mean 2020-2069")
 
 ```
 
@@ -373,11 +423,10 @@ geoMean_wild_females_boxplot<-geo_mean_func(sim_S_wild,"Geometric mean 2020-2069
 ```
 
 
-
 ```{r pQET}
 
-sim_S_wild_tot<- apply(sim_S_wild,c(1,3),sum)#total spawners across streams
-sim_S_wild_w_tot<-sim_S_wild %>% abind::abind(sim_S_wild_tot,along=2)#add sum across streams to individual streams
+sim_S_wild_tot<- apply(sim_out,c(1,3),sum)#total spawners across streams
+sim_S_wild_w_tot<-sim_out %>% abind::abind(sim_S_wild_tot,along=2)#add sum across streams to individual streams
 
 # function to calculate 4-year running mean
 running_mean<-apply(sim_S_wild_w_tot[sim_sum_yrs+3,,],2:3,function(x){
@@ -389,13 +438,13 @@ running_mean<-apply(sim_S_wild_w_tot[sim_sum_yrs+3,,],2:3,function(x){
 # quasi extinction event years
 QET_year<-apply(running_mean,2:3,function(x){
   out<-numeric(length(x))
-  for ( i in 1:length(out)) out[i]<-(min(x[1:i],na.rm=T)<=15)
+  for ( i in 1:length(out)) out[i]<-(min(x[1:i],na.rm=T)<=50)
   
   out
 })
 
 # quasi-extinction during any year of a simulation
-QET_classification<-apply(running_mean,2:3,function(x){min(x,na.rm=T)<15})
+QET_classification<-apply(running_mean,2:3,function(x){min(x,na.rm=T)<50})
 
 
 pQET_boot<-matrix(NA,dim(sim_out)[3]/100,4) ## matrix to hold proportion of 100 trajectories made with each posterior sample where quasi-extinction occured
