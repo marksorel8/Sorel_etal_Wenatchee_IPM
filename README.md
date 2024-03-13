@@ -1,4 +1,4 @@
-## *Incorporating life history diversity in an integrated population model to inform viability analysis*
+## [*Incorporating life history diversity in an integrated population model to inform viability analysis*](https://cdnsciencepub.com/doi/abs/10.1139/cjfas-2023-0118)
 
 #### Mark H. Sorel, Jeffrey C. Jorgensen, Richard W. Zabel, Mark D. Scheuerell, Andrew R. Murdoch, Cory M. Kamphaus, and Sarah J. Converse
 
